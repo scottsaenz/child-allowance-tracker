@@ -61,96 +61,44 @@ jobs:
           # Create deployment zip
           cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Check if Lambda execution role exists
+      - name: Verify deployment package
         run: |
-          if ! aws iam get-role --role-name lambda-execution-role 2>/dev/null; then
-            echo "Creating Lambda execution role..."
+          echo "Checking deployment package contents..."
+          unzip -l deployment.zip | head -20
 
-            # Create trust policy
-            cat > trust-policy.json << 'EOF'
+          echo "Checking for app.py..."
+          unzip -l deployment.zip | grep app.py || echo "app.py not found"
+
+          echo "Checking for lambda_function.py..."
+          unzip -l deployment.zip | grep lambda_function.py || echo "lambda_function.py not found"
+
+          echo "Checking Python files..."
+          unzip -l deployment.zip | grep "\.py$" | head -10
+
+      - name: Create test event
+        run: |
+          cat > test-event.json << 'EOF'
           {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Principal": {
-                  "Service": "lambda.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole"
+            "version": "2.0",
+            "routeKey": "GET /",
+            "rawPath": "/",
+            "rawQueryString": "",
+            "headers": {
+              "accept": "text/html,application/xhtml+xml",
+              "host": "tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws",
+              "user-agent": "curl/7.68.0"
+            },
+            "requestContext": {
+              "http": {
+                "method": "GET",
+                "path": "/",
+                "protocol": "HTTP/1.1",
+                "sourceIp": "127.0.0.1"
               }
-            ]
+            },
+            "isBase64Encoded": false
           }
           EOF
-
-            # Create the role
-            aws iam create-role \
-              --role-name lambda-execution-role \
-              --assume-role-policy-document file://trust-policy.json
-
-            # Attach basic execution policy
-            aws iam attach-role-policy \
-              --role-name lambda-execution-role \
-              --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-            # Create and attach DynamoDB policy
-            cat > dynamodb-policy.json << 'EOF'
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Action": [
-                  "dynamodb:GetItem",
-                  "dynamodb:PutItem",
-                  "dynamodb:UpdateItem",
-                  "dynamodb:DeleteItem",
-                  "dynamodb:Query",
-                  "dynamodb:Scan"
-                ],
-                "Resource": "arn:aws:dynamodb:us-east-1:960311492155:table/allowance-data-*"
-              }
-            ]
-          }
-          EOF
-
-            aws iam put-role-policy \
-              --role-name lambda-execution-role \
-              --policy-name DynamoDBAccess \
-              --policy-document file://dynamodb-policy.json
-
-            echo "Waiting for role to be available..."
-            sleep 10
-          else
-            echo "Lambda execution role already exists"
-          fi
-
-      - name: Create environment variables JSON
-        env:
-          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-          AUTHORIZED_EMAILS: ${{ secrets.AUTHORIZED_EMAILS }}
-        run: |
-          # Create environment variables JSON file
-          jq -n \
-            --arg sheets_id "$GOOGLE_SHEETS_ID" \
-            --arg service_account "$GOOGLE_SERVICE_ACCOUNT_JSON" \
-            --arg emails "$AUTHORIZED_EMAILS" \
-            '{
-              Variables: {
-                GOOGLE_SHEETS_ID: $sheets_id,
-                GOOGLE_SERVICE_ACCOUNT_JSON: $service_account,
-                AUTHORIZED_EMAILS: $emails,
-                DYNAMODB_TABLE: "allowance-data-production",
-                LOG_LEVEL: "INFO"
-              }
-            }' > env-vars.json
 
       - name: Deploy to Lambda
         run: |
@@ -183,6 +131,31 @@ jobs:
               --function-name child-allowance-tracker \
               --environment file://env-vars.json
           fi
+
+      - name: Test deployed function
+        run: |
+          echo "Waiting for function to be ready..."
+          sleep 10
+
+          echo "Testing function directly..."
+          aws lambda invoke \
+            --function-name child-allowance-tracker \
+            --payload file://test-event.json \
+            response.json
+
+          echo "Lambda invoke response:"
+          cat response.json
+
+          echo "Testing via URL with curl..."
+          curl -v -X GET https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "URL test failed"
+
+      - name: Check CloudWatch logs
+        run: |
+          echo "Checking recent logs..."
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            || echo "No logs found or log group doesn't exist"
 
       - name: Get Function URL
         run: |

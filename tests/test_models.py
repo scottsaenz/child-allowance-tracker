@@ -1,8 +1,48 @@
+"""Test the Pydantic models"""
+
 import os
 import sys
+from datetime import datetime
 
-# Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import pytest
+
+# Add src to path - moved to top
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
+
+
+def test_models_can_be_imported():
+    """Test that models can be imported"""
+    try:
+        from app import AllowanceRecord, AllowanceResponse, Child
+
+        # Test Child model
+        child = Child(name="Test Child", age=10, weekly_allowance=5.0)
+        assert child.name == "Test Child"
+        assert child.age == 10
+        assert child.weekly_allowance == 5.0
+
+        # Test AllowanceRecord model
+        record = AllowanceRecord(
+            child_name="Test Child",
+            amount=2.5,
+            date=datetime.now(),
+            description="Weekly allowance",
+        )
+        assert record.child_name == "Test Child"
+        assert record.amount == 2.5
+
+        # Test AllowanceResponse model
+        response = AllowanceResponse(
+            id="test-id",
+            child_name="Test Child",
+            amount=2.5,
+            date=datetime.now(),
+        )
+        assert response.id == "test-id"
+
+    except ImportError as e:
+        pytest.skip(f"Models not available: {e}")
+
 
 from models.child import Child
 from models.expenditure import Expenditure

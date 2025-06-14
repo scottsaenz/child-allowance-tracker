@@ -1,4 +1,4 @@
-name: Deploy to AWS Lambda
+name: Deploy FastAPI to AWS Lambda
 
 on:
   push:
@@ -18,10 +18,16 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.13
 
       - name: Install dependencies
         run: uv sync
+
+      - name: Run Ruff linter
+        run: uv run ruff check .
+
+      - name: Run Ruff formatter
+        run: uv run ruff format --check .
 
       - name: Run tests
         run: uv run pytest
@@ -40,7 +46,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.13
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -66,7 +72,9 @@ jobs:
                 GOOGLE_SERVICE_ACCOUNT_JSON: $service_account,
                 AUTHORIZED_EMAILS: $emails,
                 DYNAMODB_TABLE: "allowance-data-production",
-                LOG_LEVEL: "INFO"
+                LOG_LEVEL: "INFO",
+                POWERTOOLS_SERVICE_NAME: "child-allowance-tracker",
+                POWERTOOLS_METRICS_NAMESPACE: "ChildAllowanceApp"
               }
             }' > env-vars.json
 
@@ -74,7 +82,7 @@ jobs:
         run: |
           mkdir deployment
 
-          # Export dependencies without hashes and exclude the local project
+          # Export dependencies without hashes and exclude dev dependencies
           uv export --format requirements-txt --no-hashes --no-dev > requirements.txt
 
           # Install dependencies to deployment directory
@@ -87,74 +95,11 @@ jobs:
           cp lambda_function.py deployment/
 
           # Create deployment zip
-          cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*"
+          cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*" "*.pytest_cache*"
 
       - name: Verify deployment package
         run: |
           echo "Checking deployment package contents..."
-          unzip -l deployment.zip | head -20
-
-          echo "Checking for app.py..."
-          unzip -l deployment.zip | grep app.py || echo "app.py not found"
-
-          echo "Checking for lambda_function.py..."
-          unzip -l deployment.zip | grep lambda_function.py || echo "lambda_function.py not found"
-
-          echo "Checking Python files..."
-          unzip -l deployment.zip | grep "\.py$" | head -10
-
-      - name: Create test event
-        run: |
-          cat > test-event.json << 'EOF'
-          {
-            "version": "2.0",
-            "routeKey": "GET /",
-            "rawPath": "/",
-            "rawQueryString": "",
-            "headers": {
-              "accept": "text/html,application/xhtml+xml",
-              "host": "tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws",
-              "user-agent": "curl/7.68.0"
-            },
-            "requestContext": {
-              "http": {
-                "method": "GET",
-                "path": "/",
-                "protocol": "HTTP/1.1",
-                "sourceIp": "127.0.0.1"
-              }
-            },
-            "isBase64Encoded": false
-          }
-          EOF
-
-      - name: Create CloudWatch log group
-        run: |
-          echo "Creating CloudWatch log group..."
-          aws logs create-log-group \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --region us-east-1 || echo "Log group already exists or creation failed"
-
-          # Set retention policy
-          aws logs put-retention-policy \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --retention-in-days 14 || echo "Failed to set retention policy"
-
-      - name: Check existing Lambda execution role
-        run: |
-          echo "Checking existing Lambda execution role..."
-          aws iam get-role --role-name lambda-execution-role --query 'Role.[RoleName,CreateDate]' --output table || echo "Role not found"
-
-          echo "Checking attached policies..."
-          aws iam list-attached-role-policies --role-name lambda-execution-role --output table || echo "Failed to list policies"
-
-          echo "Checking inline policies..."
-          aws iam list-role-policies --role-name lambda-execution-role --output table || echo "Failed to list inline policies"
-
-      - name: Debug deployment package structure
-        run: |
-          echo "=== DEPLOYMENT PACKAGE ANALYSIS ==="
-          echo "Full deployment package contents:"
           unzip -l deployment.zip | head -30
 
           echo ""
@@ -165,41 +110,53 @@ jobs:
           echo "app.py exists:"
           unzip -l deployment.zip | grep "app.py" || echo "❌ MISSING"
 
-          echo "awsgi module:"
-          unzip -l deployment.zip | grep "awsgi" || echo "❌ MISSING"
+          echo "fastapi module:"
+          unzip -l deployment.zip | grep "fastapi" || echo "❌ MISSING"
 
-          echo "flask module:"
-          unzip -l deployment.zip | grep -i "flask" || echo "❌ MISSING"
+          echo "mangum module:"
+          unzip -l deployment.zip | grep "mangum" || echo "❌ MISSING"
+
+          echo "aws_lambda_powertools module:"
+          unzip -l deployment.zip | grep "aws_lambda_powertools" || echo "❌ MISSING"
+
+          echo "boto3 module:"
+          unzip -l deployment.zip | grep "boto3" || echo "❌ MISSING"
 
           echo ""
-          echo "=== CHECKING PACKAGE STRUCTURE ==="
-          # Extract and examine structure
+          echo "=== TESTING IMPORTS ==="
+          # Extract and test imports
           mkdir -p test_extract
           cd test_extract
           unzip -q ../deployment.zip
 
-          echo "Root directory contents:"
-          ls -la | head -20
-
-          echo ""
-          echo "Looking for Python files:"
-          find . -name "*.py" | head -20
-
-          echo ""
-          echo "Testing basic imports:"
           python3 -c "
           import sys, os
-          print(f'Working directory: {os.getcwd()}')
-          print(f'Python path: {sys.path[:3]}')
+          print('Testing FastAPI and PowerTools imports...')
 
-          # Test basic Python functionality
           try:
-              import json
-              print('✅ json module works')
+              from fastapi import FastAPI
+              print('✅ FastAPI imported successfully')
           except Exception as e:
-              print(f'❌ json module failed: {e}')
+              print(f'❌ FastAPI import failed: {e}')
 
-          # Test if lambda_function exists and can be imported
+          try:
+              from mangum import Mangum
+              print('✅ Mangum imported successfully')
+          except Exception as e:
+              print(f'❌ Mangum import failed: {e}')
+
+          try:
+              from aws_lambda_powertools import Logger, Tracer, Metrics
+              print('✅ AWS PowerTools imported successfully')
+          except Exception as e:
+              print(f'❌ PowerTools import failed: {e}')
+
+          try:
+              import boto3
+              print('✅ boto3 imported successfully')
+          except Exception as e:
+              print(f'❌ boto3 import failed: {e}')
+
           try:
               import lambda_function
               print('✅ lambda_function imported successfully')
@@ -210,6 +167,18 @@ jobs:
               traceback.print_exc()
           " || echo "Python test failed"
 
+      - name: Create CloudWatch log group
+        run: |
+          echo "Creating CloudWatch log group..."
+          aws logs create-log-group \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --region us-east-1 || echo "Log group already exists"
+
+          # Set retention policy
+          aws logs put-retention-policy \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --retention-in-days 14 || echo "Failed to set retention policy"
+
       - name: Deploy to Lambda
         run: |
           echo "Using existing Lambda execution role: arn:aws:iam::960311492155:role/lambda-execution-role"
@@ -219,12 +188,12 @@ jobs:
             echo "Creating Lambda function..."
             aws lambda create-function \
               --function-name child-allowance-tracker \
-              --runtime python3.12 \
+              --runtime python3.13 \
               --role arn:aws:iam::960311492155:role/lambda-execution-role \
               --handler lambda_function.lambda_handler \
               --zip-file fileb://deployment.zip \
               --timeout 30 \
-              --memory-size 256 \
+              --memory-size 512 \
               --environment file://env-vars.json
 
             echo "✅ Lambda function created"
@@ -301,146 +270,73 @@ jobs:
           echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
           echo "✅ API Gateway endpoint: $API_ENDPOINT"
 
-      - name: Test deployed function via API Gateway
+      - name: Test FastAPI endpoints
         run: |
           echo "Waiting for API Gateway to be ready..."
-          sleep 10
+          sleep 15
 
-          echo "Testing via API Gateway..."
+          echo "Testing FastAPI via API Gateway..."
           echo "API Endpoint: $API_ENDPOINT"
           echo "==================================="
 
-          # Test with more detailed error reporting
-          echo "1. Testing root endpoint:"
-          RESPONSE=$(curl -s $API_ENDPOINT/ || echo "curl failed")
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/ || echo "status check failed")
-          echo "Response: $RESPONSE"
-          echo "HTTP Status: $STATUS"
+          # Test health endpoint
+          echo "1. Testing health endpoint:"
+          HEALTH_RESPONSE=$(curl -s $API_ENDPOINT/health || echo "curl failed")
+          HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/health || echo "status check failed")
+          echo "Health Response: $HEALTH_RESPONSE"
+          echo "Health HTTP Status: $HEALTH_STATUS"
 
           echo ""
-          echo "2. Testing health endpoint:"
-          curl -s -w "\nHTTP Status: %{http_code}\n" $API_ENDPOINT/health || echo "Health endpoint failed"
+          echo "2. Testing root endpoint:"
+          ROOT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/ || echo "status check failed")
+          echo "Root HTTP Status: $ROOT_STATUS"
 
           echo ""
-          echo "3. Verbose test:"
-          curl -v $API_ENDPOINT/ || echo "Verbose test failed"
+          echo "3. Testing API documentation:"
+          DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/docs || echo "status check failed")
+          echo "Docs HTTP Status: $DOCS_STATUS"
 
-      - name: Check CloudWatch logs
-        run: |
-          echo "Checking recent logs..."
+          echo ""
+          echo "4. Testing dashboard API:"
+          DASHBOARD_RESPONSE=$(curl -s $API_ENDPOINT/api/dashboard || echo "curl failed")
+          DASHBOARD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/api/dashboard || echo "status check failed")
+          echo "Dashboard Response: $DASHBOARD_RESPONSE"
+          echo "Dashboard HTTP Status: $DASHBOARD_STATUS"
 
-          # Wait a moment for logs to appear
-          sleep 5
+          echo ""
+          echo "5. Testing children API:"
+          CHILDREN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/api/children || echo "status check failed")
+          echo "Children API HTTP Status: $CHILDREN_STATUS"
 
-          # Check if log group exists
-          if aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/child-allowance-tracker" --query 'logGroups[0].logGroupName' --output text | grep -q child-allowance-tracker; then
-            echo "✅ Log group found"
-
-            # Get the most recent log stream
-            LATEST_STREAM=$(aws logs describe-log-streams \
-              --log-group-name "/aws/lambda/child-allowance-tracker" \
-              --order-by LastEventTime \
-              --descending \
-              --max-items 1 \
-              --query 'logStreams[0].logStreamName' \
-              --output text)
-
-            if [ "$LATEST_STREAM" != "None" ] && [ -n "$LATEST_STREAM" ]; then
-              echo "Latest log stream: $LATEST_STREAM"
-
-              echo "Recent log events:"
-              aws logs get-log-events \
-                --log-group-name "/aws/lambda/child-allowance-tracker" \
-                --log-stream-name "$LATEST_STREAM" \
-                --start-from-head \
-                --query 'events[*].[timestamp,message]' \
-                --output table || echo "Failed to get log events"
-            else
-              echo "No log streams found"
-            fi
-
-            # Also try filter-log-events for recent events
-            echo ""
-            echo "Filtering recent events (last 10 minutes):"
-            aws logs filter-log-events \
-              --log-group-name "/aws/lambda/child-allowance-tracker" \
-              --start-time $(date -d '10 minutes ago' +%s)000 \
-              --query 'events[*].[timestamp,message]' \
-              --output table || echo "No recent events found"
-
+          echo ""
+          echo "=== SUMMARY ==="
+          if [ "$HEALTH_STATUS" = "200" ]; then
+            echo "✅ Health endpoint working!"
           else
-            echo "❌ Log group /aws/lambda/child-allowance-tracker not found"
-            echo "Available log groups:"
-            aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/" --query 'logGroups[*].logGroupName' --output table
+            echo "❌ Health endpoint failed"
           fi
 
-      - name: Get Function URL
+          if [ "$ROOT_STATUS" = "200" ]; then
+            echo "✅ Root endpoint working!"
+          else
+            echo "❌ Root endpoint failed"
+          fi
+
+          if [ "$DOCS_STATUS" = "200" ]; then
+            echo "✅ API documentation working!"
+          else
+            echo "❌ API documentation failed"
+          fi
+
+      - name: Display final URLs
         run: |
-          URL=$(aws lambda get-function-url-config --function-name child-allowance-tracker --query 'FunctionUrl' --output text 2>/dev/null || echo "No URL configured")
-          echo "🚀 Function URL: $URL"
-          echo "Function URL: $URL" >> $GITHUB_STEP_SUMMARY
-
-      - name: Test with minimal Lambda function
-        run: |
-          echo "Creating minimal test function..."
-
-          # Create minimal test function
-          cat > minimal_test.py << 'EOF'
-          import json
-
-          def lambda_handler(event, context):
-              print(f"Event received: {event}")
-              return {
-                  'statusCode': 200,
-                  'headers': {
-                      'Content-Type': 'application/json',
-                  },
-                  'body': json.dumps({
-                      'message': 'Minimal test working!',
-                      'event_method': event.get('requestContext', {}).get('http', {}).get('method', 'unknown'),
-                      'event_path': event.get('rawPath', 'unknown')
-                  })
-              }
-          EOF
-
-          # Create minimal zip
-          zip minimal.zip minimal_test.py
-
-          # Deploy minimal function
-          echo "Deploying minimal test function..."
-          aws lambda update-function-code \
-            --function-name child-allowance-tracker \
-            --zip-file fileb://minimal.zip
-
-          # Update handler
-          aws lambda update-function-configuration \
-            --function-name child-allowance-tracker \
-            --handler minimal_test.lambda_handler
-
-          echo "Waiting for minimal function to be ready..."
-          sleep 10
-
-          echo "Testing minimal function:"
-          curl -s -w "\nHTTP Status: %{http_code}\n" \
-            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/
-
-          # Check logs after minimal test
+          echo "🚀 Deployment Complete!"
+          echo "================================="
+          echo "Main Application: $API_ENDPOINT/"
+          echo "Health Check: $API_ENDPOINT/health"
+          echo "API Documentation: $API_ENDPOINT/docs"
+          echo "API Dashboard: $API_ENDPOINT/api/dashboard"
+          echo "Children API: $API_ENDPOINT/api/children"
           echo ""
-          echo "Checking logs after minimal test:"
-          sleep 5
-          aws logs filter-log-events \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --start-time $(date -d '2 minutes ago' +%s)000 \
-            --query 'events[*].message' \
-            --output text || echo "No logs found"
-
-      - name: Check Lambda execution role
-        run: |
-          echo "Checking Lambda execution role..."
-          aws iam get-role --role-name lambda-execution-role --query 'Role.AssumeRolePolicyDocument' || echo "Role not found"
-
-          echo "Checking attached policies..."
-          aws iam list-attached-role-policies --role-name lambda-execution-role || echo "Failed to list policies"
-
-          echo "Checking inline policies..."
-          aws iam list-role-policies --role-name lambda-execution-role || echo "Failed to list inline policies"
+          echo "Main Application: $API_ENDPOINT/" >> $GITHUB_STEP_SUMMARY
+          echo "API Documentation: $API_ENDPOINT/docs" >> $GITHUB_STEP_SUMMARY

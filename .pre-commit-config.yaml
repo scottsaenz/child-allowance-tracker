@@ -1,28 +1,23 @@
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v4.5.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^infrastructure/.*\.yaml$
+        exclude: ^infrastructure/
       - id: check-added-large-files
+      - id: check-json
       - id: check-toml
       - id: check-merge-conflict
-
-  # Temporarily disable CloudFormation linting
-  # - repo: https://github.com/aws-cloudformation/cfn-python-lint
-  #   rev: v1.36.0
-  #   hooks:
-  #     - id: cfn-python-lint
-  #       files: ^infrastructure/.*\.yaml$
+      - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
+    rev: v0.1.8
     hooks:
       - id: ruff
-        args: [--fix]
+        args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
   - repo: local
@@ -31,5 +26,6 @@ repos:
         name: pytest
         entry: uv run pytest
         language: system
+        types: [python]
         pass_filenames: false
         always_run: true

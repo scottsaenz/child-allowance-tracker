@@ -225,6 +225,14 @@ jobs:
             fi
           fi
 
+      - name: Verify Lambda configuration
+        run: |
+          echo "Checking Lambda function configuration..."
+          aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.[State,LastUpdateStatus,Runtime,Handler]' --output table
+
+          echo "Checking Function URL configuration..."
+          aws lambda get-function-url-config --function-name child-allowance-tracker --output json
+
       - name: Test deployed function
         run: |
           echo "Waiting for function to be ready..."
@@ -233,9 +241,12 @@ jobs:
           echo "Testing via Function URL..."
           echo "==================================="
 
+          # Test with more detailed error reporting
           echo "1. Testing root endpoint:"
-          curl -s -w "\nHTTP Status: %{http_code}\n" \
-            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "Root endpoint failed"
+          RESPONSE=$(curl -s https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/)
+          echo "Response: $RESPONSE"
+          echo "HTTP Status: $STATUS"
 
           echo ""
           echo "2. Testing health endpoint:"
@@ -254,13 +265,108 @@ jobs:
       - name: Check CloudWatch logs
         run: |
           echo "Checking recent logs..."
-          aws logs filter-log-events \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --start-time $(date -d '5 minutes ago' +%s)000 \
-            || echo "No logs found or log group doesn't exist"
+
+          # Wait a moment for logs to appear
+          sleep 5
+
+          # Check if log group exists
+          if aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/child-allowance-tracker" --query 'logGroups[0].logGroupName' --output text | grep -q child-allowance-tracker; then
+            echo "✅ Log group found"
+
+            # Get the most recent log stream
+            LATEST_STREAM=$(aws logs describe-log-streams \
+              --log-group-name "/aws/lambda/child-allowance-tracker" \
+              --order-by LastEventTime \
+              --descending \
+              --max-items 1 \
+              --query 'logStreams[0].logStreamName' \
+              --output text)
+
+            if [ "$LATEST_STREAM" != "None" ] && [ -n "$LATEST_STREAM" ]; then
+              echo "Latest log stream: $LATEST_STREAM"
+
+              echo "Recent log events:"
+              aws logs get-log-events \
+                --log-group-name "/aws/lambda/child-allowance-tracker" \
+                --log-stream-name "$LATEST_STREAM" \
+                --start-from-head \
+                --query 'events[*].[timestamp,message]' \
+                --output table || echo "Failed to get log events"
+            else
+              echo "No log streams found"
+            fi
+
+            # Also try filter-log-events for recent events
+            echo ""
+            echo "Filtering recent events (last 10 minutes):"
+            aws logs filter-log-events \
+              --log-group-name "/aws/lambda/child-allowance-tracker" \
+              --start-time $(date -d '10 minutes ago' +%s)000 \
+              --query 'events[*].[timestamp,message]' \
+              --output table || echo "No recent events found"
+
+          else
+            echo "❌ Log group /aws/lambda/child-allowance-tracker not found"
+            echo "Available log groups:"
+            aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/" --query 'logGroups[*].logGroupName' --output table
+          fi
 
       - name: Get Function URL
         run: |
           URL=$(aws lambda get-function-url-config --function-name child-allowance-tracker --query 'FunctionUrl' --output text 2>/dev/null || echo "No URL configured")
           echo "🚀 Function URL: $URL"
           echo "Function URL: $URL" >> $GITHUB_STEP_SUMMARY
+
+      - name: Test with minimal Lambda function
+        run: |
+          echo "Creating minimal test function..."
+
+          # Create minimal test function
+          cat > minimal_test.py << 'EOF'
+          import json
+
+          def lambda_handler(event, context):
+              print(f"Event received: {event}")
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                  },
+                  'body': json.dumps({
+                      'message': 'Minimal test working!',
+                      'event_method': event.get('requestContext', {}).get('http', {}).get('method', 'unknown'),
+                      'event_path': event.get('rawPath', 'unknown')
+                  })
+              }
+          EOF
+
+          # Create minimal zip
+          zip minimal.zip minimal_test.py
+
+          # Deploy minimal function
+          echo "Deploying minimal test function..."
+          aws lambda update-function-code \
+            --function-name child-allowance-tracker \
+            --zip-file fileb://minimal.zip
+
+          # Update handler
+          aws lambda update-function-configuration \
+            --function-name child-allowance-tracker \
+            --handler minimal_test.lambda_handler
+
+          echo "Waiting for minimal function to be ready..."
+          sleep 10
+
+          echo "Testing minimal function:"
+          curl -s -w "\nHTTP Status: %{http_code}\n" \
+            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/
+
+          # Check logs after minimal test
+          echo ""
+          echo "Checking logs after minimal test:"
+          sleep 5
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '2 minutes ago' +%s)000 \
+            --query 'events[*].message' \
+            --output text || echo "No logs found"

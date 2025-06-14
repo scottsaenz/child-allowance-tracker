@@ -17,8 +17,8 @@ Parameters:
 Globals:
   Function:
     Timeout: 30
-    MemorySize: 256
-    Runtime: python3.12
+    MemorySize: 128
+    Runtime: python3.13
 
 Resources:
   # DynamoDB Table

@@ -227,11 +227,7 @@ jobs:
               --memory-size 256 \
               --environment file://env-vars.json
 
-            echo "Creating function URL..."
-            aws lambda create-function-url-config \
-              --function-name child-allowance-tracker \
-              --cors AllowCredentials=false,AllowHeaders="*",AllowMethods="*",AllowOrigins="*" \
-              --auth-type NONE || true
+            echo "✅ Lambda function created"
 
           else
             echo "Function exists. Updating..."
@@ -269,61 +265,65 @@ jobs:
             echo "Configuration update completed"
           fi
 
-      - name: Wait for function to be truly ready
+      - name: Create API Gateway
         run: |
-          echo "Waiting for function to initialize..."
-          sleep 30
+          echo "Creating/updating API Gateway..."
 
-          # Check function state multiple times
-          for i in {1..10}; do
-            STATE=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.State' --output text)
-            STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
-            echo "Attempt $i: State=$STATE, Status=$STATUS"
+          # Check if API exists
+          API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='child-allowance-tracker-api'].ApiId" --output text 2>/dev/null || echo "")
 
-            if [ "$STATE" = "Active" ] && [ "$STATUS" = "Successful" ]; then
-              echo "✅ Function is ready!"
-              break
-            fi
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "Creating new API Gateway..."
+            API_ID=$(aws apigatewayv2 create-api \
+              --name child-allowance-tracker-api \
+              --protocol-type HTTP \
+              --target arn:aws:lambda:us-east-1:960311492155:function:child-allowance-tracker \
+              --route-key 'ANY /{proxy+}' \
+              --query 'ApiId' --output text)
+            echo "Created API with ID: $API_ID"
+          else
+            echo "API Gateway already exists with ID: $API_ID"
+          fi
 
-            sleep 5
-          done
+          # Store API ID for later steps
+          echo "API_ID=$API_ID" >> $GITHUB_ENV
 
-      - name: Verify Lambda configuration
+          # Give API Gateway permission to invoke Lambda
+          aws lambda add-permission \
+            --function-name child-allowance-tracker \
+            --statement-id AllowAPIGatewayInvoke \
+            --action lambda:InvokeFunction \
+            --principal apigateway.amazonaws.com \
+            --source-arn "arn:aws:execute-api:us-east-1:960311492155:$API_ID/*/*" || echo "Permission already exists"
+
+          # Get the API endpoint
+          API_ENDPOINT=$(aws apigatewayv2 get-api --api-id $API_ID --query 'ApiEndpoint' --output text)
+          echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
+          echo "✅ API Gateway endpoint: $API_ENDPOINT"
+
+      - name: Test deployed function via API Gateway
         run: |
-          echo "Checking Lambda function configuration..."
-          aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.[State,LastUpdateStatus,Runtime,Handler]' --output table
+          echo "Waiting for API Gateway to be ready..."
+          sleep 10
 
-          echo "Checking Function URL configuration..."
-          aws lambda get-function-url-config --function-name child-allowance-tracker --output json
-
-      - name: Test deployed function
-        run: |
-          echo "Waiting for function to be ready..."
-          sleep 15
-
-          echo "Testing via Function URL..."
+          echo "Testing via API Gateway..."
+          echo "API Endpoint: $API_ENDPOINT"
           echo "==================================="
 
           # Test with more detailed error reporting
           echo "1. Testing root endpoint:"
-          RESPONSE=$(curl -s https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/)
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/)
+          RESPONSE=$(curl -s $API_ENDPOINT/ || echo "curl failed")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/ || echo "status check failed")
           echo "Response: $RESPONSE"
           echo "HTTP Status: $STATUS"
 
           echo ""
           echo "2. Testing health endpoint:"
-          curl -s -w "\nHTTP Status: %{http_code}\n" \
-            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/health || echo "Health endpoint failed"
+          curl -s -w "\nHTTP Status: %{http_code}\n" $API_ENDPOINT/health || echo "Health endpoint failed"
 
           echo ""
-          echo "3. Testing with JSON accept header:"
-          curl -s -H "Accept: application/json" -w "\nHTTP Status: %{http_code}\n" \
-            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "JSON header test failed"
-
-          echo ""
-          echo "4. Verbose test to see full response:"
-          curl -v https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "Verbose test failed"
+          echo "3. Verbose test:"
+          curl -v $API_ENDPOINT/ || echo "Verbose test failed"
 
       - name: Check CloudWatch logs
         run: |

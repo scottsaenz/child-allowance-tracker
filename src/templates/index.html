@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Child Allowance Tracker</title>
+    <link rel="stylesheet" href="../static/css/styles.css">
+</head>
+<body>
+    <header>
+        <h1>Child Allowance Tracker</h1>
+    </header>
+    <main>
+        <section id="dashboard">
+            <h2>Dashboard</h2>
+            <div id="total-amounts">
+                <!-- Total amounts will be displayed here -->
+            </div>
+        </section>
+        <section id="expenditure-form">
+            <h2>Post Expenditure</h2>
+            <form action="/post_expenditure" method="POST">
+                <label for="child-name">Child Name:</label>
+                <input type="text" id="child-name" name="child_name" required>
+                
+                <label for="amount">Amount:</label>
+                <input type="number" id="amount" name="amount" required>
+                
+                <label for="date">Date:</label>
+                <input type="date" id="date" name="date" required>
+                
+                <label for="description">Description:</label>
+                <textarea id="description" name="description" required></textarea>
+                
+                <button type="submit">Submit Expenditure</button>
+            </form>
+        </section>
+    </main>
+    <script src="../static/js/main.js"></script>
+</body>
+</html>

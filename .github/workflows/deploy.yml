@@ -150,52 +150,79 @@ jobs:
               --auth-type NONE || true
 
           else
-            echo "Updating existing Lambda function code..."
-            aws lambda update-function-code \
-              --function-name child-allowance-tracker \
-              --zip-file fileb://deployment.zip
+            echo "Checking if function needs updating..."
 
-            echo "Waiting for function update to complete..."
-            for i in {1..30}; do
-              STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
-              echo "Update status: $STATUS (attempt $i/30)"
+            # Get current function's CodeSha256
+            CURRENT_SHA=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.CodeSha256' --output text)
+            echo "Current function CodeSha256: $CURRENT_SHA"
 
-              if [ "$STATUS" = "Successful" ]; then
-                echo "Function update completed successfully"
-                break
-              elif [ "$STATUS" = "Failed" ]; then
-                echo "Function update failed"
+            # Calculate SHA256 of our deployment package
+            NEW_SHA=$(openssl dgst -sha256 -binary deployment.zip | base64)
+            echo "New deployment CodeSha256: $NEW_SHA"
+
+            if [ "$CURRENT_SHA" != "$NEW_SHA" ]; then
+              echo "Code has changed. Updating Lambda function..."
+
+              aws lambda update-function-code \
+                --function-name child-allowance-tracker \
+                --zip-file fileb://deployment.zip
+
+              echo "Waiting for function update to complete..."
+              for i in {1..30}; do
+                STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
+                echo "Update status: $STATUS (attempt $i/30)"
+
+                if [ "$STATUS" = "Successful" ]; then
+                  echo "Function update completed successfully"
+                  break
+                elif [ "$STATUS" = "Failed" ]; then
+                  echo "Function update failed"
+                  exit 1
+                fi
+
+                sleep 10
+              done
+
+              if [ "$STATUS" != "Successful" ]; then
+                echo "Function update timed out"
                 exit 1
               fi
-
-              sleep 10
-            done
-
-            if [ "$STATUS" != "Successful" ]; then
-              echo "Function update timed out"
-              exit 1
+            else
+              echo "✅ Code unchanged. Skipping function code update."
             fi
 
-            echo "Updating Lambda function configuration..."
-            aws lambda update-function-configuration \
-              --function-name child-allowance-tracker \
-              --environment file://env-vars.json
+            # Always check and update environment variables if needed
+            echo "Checking environment variables..."
 
-            echo "Waiting for configuration update to complete..."
-            for i in {1..30}; do
-              STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
-              echo "Configuration update status: $STATUS (attempt $i/30)"
+            # Get current environment variables
+            CURRENT_ENV=$(aws lambda get-function-configuration --function-name child-allowance-tracker --query 'Environment.Variables' --output json)
+            NEW_ENV=$(cat env-vars.json | jq '.Variables')
 
-              if [ "$STATUS" = "Successful" ]; then
-                echo "Configuration update completed successfully"
-                break
-              elif [ "$STATUS" = "Failed" ]; then
-                echo "Configuration update failed"
-                exit 1
-              fi
+            if [ "$CURRENT_ENV" != "$NEW_ENV" ]; then
+              echo "Environment variables have changed. Updating configuration..."
 
-              sleep 5
-            done
+              aws lambda update-function-configuration \
+                --function-name child-allowance-tracker \
+                --environment file://env-vars.json
+
+              echo "Waiting for configuration update to complete..."
+              for i in {1..30}; do
+                STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
+                echo "Configuration update status: $STATUS (attempt $i/30)"
+
+                if [ "$STATUS" = "Successful" ]; then
+                  echo "Configuration update completed successfully"
+                  break
+                elif [ "$STATUS" = "Failed" ]; then
+                  echo "Configuration update failed"
+                  exit 1
+                fi
+
+                sleep 5
+              done
+            else
+              echo "✅ Environment variables unchanged. Skipping configuration update."
+            fi
           fi
 
       - name: Test deployed function
@@ -203,18 +230,26 @@ jobs:
           echo "Waiting for function to be ready..."
           sleep 15
 
-          echo "Testing function directly with AWS CLI..."
-          # Use a simpler test event inline
-          aws lambda invoke \
-            --function-name child-allowance-tracker \
-            --payload '{"version":"2.0","routeKey":"GET /","rawPath":"/","rawQueryString":"","headers":{"accept":"text/html","host":"tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws","user-agent":"curl"},"requestContext":{"http":{"method":"GET","path":"/","protocol":"HTTP/1.1","sourceIp":"127.0.0.1"}},"isBase64Encoded":false}' \
-            response.json
+          echo "Testing via Function URL..."
+          echo "==================================="
 
-          echo "Lambda invoke response:"
-          cat response.json
+          echo "1. Testing root endpoint:"
+          curl -s -w "\nHTTP Status: %{http_code}\n" \
+            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "Root endpoint failed"
 
-          echo "Testing via URL with curl..."
-          curl -v -X GET https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "URL test failed"
+          echo ""
+          echo "2. Testing health endpoint:"
+          curl -s -w "\nHTTP Status: %{http_code}\n" \
+            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/health || echo "Health endpoint failed"
+
+          echo ""
+          echo "3. Testing with JSON accept header:"
+          curl -s -H "Accept: application/json" -w "\nHTTP Status: %{http_code}\n" \
+            https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "JSON header test failed"
+
+          echo ""
+          echo "4. Verbose test to see full response:"
+          curl -v https://tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws/ || echo "Verbose test failed"
 
       - name: Check CloudWatch logs
         run: |

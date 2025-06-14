@@ -42,17 +42,24 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync
-
       - name: Create deployment package
         run: |
           mkdir deployment
-          uv export --format requirements-txt --output-file requirements.txt
-          pip install -r requirements.txt -t deployment/
-          cp -r src/ deployment/
+
+          # Export dependencies without hashes and exclude the local project
+          uv export --format requirements-txt --no-hashes --no-dev > requirements.txt
+
+          # Install dependencies to deployment directory
+          pip install -r requirements.txt -t deployment/ --no-deps
+
+          # Copy source code
+          cp -r src/* deployment/
+
+          # Copy lambda handler
           cp lambda_function.py deployment/
-          cd deployment && zip -r ../deployment.zip .
+
+          # Create deployment zip
+          cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -73,5 +80,6 @@ jobs:
               "GOOGLE_SHEETS_ID":"${{ secrets.GOOGLE_SHEETS_ID }}",
               "GOOGLE_SERVICE_ACCOUNT_JSON":"${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}",
               "AUTHORIZED_EMAILS":"${{ secrets.AUTHORIZED_EMAILS }}",
-              "DYNAMODB_TABLE":"allowance-data-production"
+              "DYNAMODB_TABLE":"allowance-data-production",
+              "LOG_LEVEL":"INFO"
             }'

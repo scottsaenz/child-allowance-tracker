@@ -23,14 +23,8 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      # Removed Ruff steps from deployment - keep them only for local development
-      # - name: Run Ruff linter
-      #   run: uv run ruff check .
-      # - name: Run Ruff formatter
-      #   run: uv run ruff format --check .
-
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest -v
 
   deploy:
     needs: test

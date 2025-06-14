@@ -79,9 +79,10 @@ jobs:
                 GOOGLE_SERVICE_ACCOUNT_JSON: $service_account,
                 AUTHORIZED_EMAILS: $emails,
                 DYNAMODB_TABLE: "allowance-data-production",
-                LOG_LEVEL: "INFO",
+                LOG_LEVEL: "DEBUG",
                 POWERTOOLS_SERVICE_NAME: "child-allowance-tracker",
-                POWERTOOLS_METRICS_NAMESPACE: "ChildAllowanceApp"
+                POWERTOOLS_METRICS_NAMESPACE: "ChildAllowanceApp",
+                POWERTOOLS_LOG_LEVEL: "DEBUG"
               }
             }' > env-vars.json
 
@@ -277,9 +278,187 @@ jobs:
           echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
           echo "✅ API Gateway endpoint: $API_ENDPOINT"
 
+      - name: Debug Lambda function after deployment
+        run: |
+          echo "=== LAMBDA FUNCTION STATUS ==="
+          aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.[State,StateReason,LastUpdateStatus,LastUpdateStatusReason,Runtime]' --output table
+
+          echo ""
+          echo "=== LAMBDA RESOURCE POLICY ==="
+          aws lambda get-policy --function-name child-allowance-tracker --query 'Policy' --output text | jq '.' || echo "No policy found"
+
+          echo ""
+          echo "=== CHECKING RECENT LAMBDA LOGS ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '10 minutes ago' +%s)000 \
+            --query 'events[*].[timestamp,message]' \
+            --output text | sort | tail -20 || echo "No recent logs found"
+
+      - name: Test individual API Gateway endpoints with debugging
+        run: |
+          echo "=== API GATEWAY DEBUGGING ==="
+          echo "API Endpoint: $API_ENDPOINT"
+          echo "Expected API Gateway ID: xt7m8ql2y6"
+          echo "Current API ID: $API_ID"
+
+          # Verify API Gateway configuration
+          echo ""
+          echo "=== API GATEWAY CONFIGURATION ==="
+          aws apigatewayv2 get-api --api-id $API_ID --query '[Name,ProtocolType,Target,RouteSelectionExpression]' --output table
+
+          echo ""
+          echo "=== API GATEWAY ROUTES ==="
+          aws apigatewayv2 get-routes --api-id $API_ID --query 'Items[*].[RouteKey,Target]' --output table
+
+          echo ""
+          echo "=== TESTING ENDPOINTS WITH VERBOSE OUTPUT ==="
+
+          # Test health endpoint with full debugging
+          echo "1. Testing health endpoint with verbose curl:"
+          curl -v -X GET "$API_ENDPOINT/health" \
+            -H "Accept: application/json" \
+            -H "User-Agent: GitHub-Actions-Test" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            2>&1 | head -50 || echo "Health endpoint curl failed"
+
+          echo ""
+          echo "2. Testing root endpoint:"
+          curl -v -X GET "$API_ENDPOINT/" \
+            -H "Accept: text/html,application/json" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            2>&1 | head -30 || echo "Root endpoint curl failed"
+
+          echo ""
+          echo "3. Testing a simple GET that should work:"
+          curl -v -X GET "$API_ENDPOINT/docs" \
+            -H "Accept: text/html" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            2>&1 | head -30 || echo "Docs endpoint curl failed"
+
+      - name: Check CloudWatch logs after API calls
+        run: |
+          echo "=== WAITING FOR LOGS TO PROPAGATE ==="
+          sleep 30
+
+          echo "=== ALL LAMBDA LOGS FROM LAST 5 MINUTES ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --query 'events[*].message' \
+            --output text | tail -100 || echo "No logs found"
+
+          echo ""
+          echo "=== LAMBDA DEBUG LOGS ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --filter-pattern "DEBUG" \
+            --query 'events[*].message' \
+            --output text || echo "No debug logs found"
+
+          echo ""
+          echo "=== LAMBDA ERROR LOGS ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --filter-pattern "ERROR" \
+            --query 'events[*].message' \
+            --output text || echo "No error logs found"
+
+          echo ""
+          echo "=== LAMBDA EXCEPTION/TRACEBACK LOGS ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --filter-pattern "?Exception ?Traceback ?ImportError" \
+            --query 'events[*].message' \
+            --output text || echo "No exception logs found"
+
+          echo ""
+          echo "=== INIT LOGS (COLD START) ==="
+          aws logs filter-log-events \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --start-time $(date -d '5 minutes ago' +%s)000 \
+            --filter-pattern "?starting ?imported ?created" \
+            --query 'events[*].message' \
+            --output text || echo "No init logs found"
+
+      - name: Enhanced deployment package verification
+        run: |
+          echo "=== ENHANCED PACKAGE VERIFICATION ==="
+
+          # Check if we're using the right Python version in deployment
+          echo "Python version used for deployment:"
+          python3 --version
+
+          echo ""
+          echo "=== CHECKING DEPLOYMENT STRUCTURE ==="
+          unzip -l deployment.zip | grep -E "\.py$" | head -20
+
+          echo ""
+          echo "=== TESTING DEPLOYMENT PACKAGE LOCALLY ==="
+          mkdir -p local_test
+          cd local_test
+          unzip -q ../deployment.zip
+
+          # Set PYTHONPATH to current directory
+          export PYTHONPATH=".:$PYTHONPATH"
+
+          echo "Testing imports with PYTHONPATH set to current directory:"
+          python3 -c "
+          import sys
+          import os
+          print(f'Python version: {sys.version}')
+          print(f'Working directory: {os.getcwd()}')
+          print(f'Python path: {sys.path[:5]}')
+          print('Files in current directory:')
+          for f in os.listdir('.'):
+              if f.endswith('.py'):
+                  print(f'  {f}')
+          " || echo "Basic test failed"
+
+          python3 -c "
+          try:
+              import lambda_function
+              print('✅ lambda_function imported')
+
+              # Check if handler exists and is callable
+              if hasattr(lambda_function, 'lambda_handler'):
+                  handler = lambda_function.lambda_handler
+                  print(f'✅ lambda_handler exists and is callable: {callable(handler)}')
+              else:
+                  print('❌ lambda_handler not found')
+
+          except Exception as e:
+              print(f'❌ lambda_function import failed: {e}')
+              import traceback
+              traceback.print_exc()
+          " || echo "Lambda function test failed"
+
+          python3 -c "
+          try:
+              import app
+              print('✅ app module imported')
+
+              if hasattr(app, 'app'):
+                  fastapi_app = app.app
+                  print(f'✅ FastAPI app found: {type(fastapi_app)}')
+              else:
+                  print('❌ FastAPI app not found in app module')
+
+          except Exception as e:
+              print(f'❌ app import failed: {e}')
+              import traceback
+              traceback.print_exc()
+          " || echo "App test failed"
+
       - name: Test FastAPI endpoints
         run: |
-          echo "Waiting for API Gateway to be ready..."
+          echo "Waiting for API Gateway and Lambda to be ready..."
           sleep 15
 
           echo "Testing FastAPI via API Gateway..."
@@ -303,15 +482,23 @@ jobs:
           DOCS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/docs || echo "status check failed")
           echo "Docs HTTP Status: $DOCS_STATUS"
 
+          # Add debug endpoint if it exists
           echo ""
-          echo "4. Testing dashboard API:"
+          echo "4. Testing debug endpoint (if exists):"
+          DEBUG_RESPONSE=$(curl -s $API_ENDPOINT/debug || echo "debug endpoint not available")
+          DEBUG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/debug || echo "status check failed")
+          echo "Debug Response: $DEBUG_RESPONSE"
+          echo "Debug HTTP Status: $DEBUG_STATUS"
+
+          echo ""
+          echo "5. Testing dashboard API:"
           DASHBOARD_RESPONSE=$(curl -s $API_ENDPOINT/api/dashboard || echo "curl failed")
           DASHBOARD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/api/dashboard || echo "status check failed")
           echo "Dashboard Response: $DASHBOARD_RESPONSE"
           echo "Dashboard HTTP Status: $DASHBOARD_STATUS"
 
           echo ""
-          echo "5. Testing children API:"
+          echo "6. Testing children API:"
           CHILDREN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $API_ENDPOINT/api/children || echo "status check failed")
           echo "Children API HTTP Status: $CHILDREN_STATUS"
 

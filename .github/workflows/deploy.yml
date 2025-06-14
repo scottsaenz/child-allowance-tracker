@@ -203,10 +203,11 @@ jobs:
           echo "Waiting for function to be ready..."
           sleep 15
 
-          echo "Testing function directly..."
+          echo "Testing function directly with AWS CLI..."
+          # Use a simpler test event inline
           aws lambda invoke \
             --function-name child-allowance-tracker \
-            --payload file://test-event.json \
+            --payload '{"version":"2.0","routeKey":"GET /","rawPath":"/","rawQueryString":"","headers":{"accept":"text/html","host":"tl3dsklehljvtlqchtgum34gpm0vhulo.lambda-url.us-east-1.on.aws","user-agent":"curl"},"requestContext":{"http":{"method":"GET","path":"/","protocol":"HTTP/1.1","sourceIp":"127.0.0.1"}},"isBase64Encoded":false}' \
             response.json
 
           echo "Lambda invoke response:"

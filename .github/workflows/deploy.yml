@@ -128,6 +128,146 @@ jobs:
           }
           EOF
 
+      - name: Create CloudWatch log group
+        run: |
+          echo "Creating CloudWatch log group..."
+          aws logs create-log-group \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --region us-east-1 || echo "Log group already exists or creation failed"
+
+          # Set retention policy
+          aws logs put-retention-policy \
+            --log-group-name "/aws/lambda/child-allowance-tracker" \
+            --retention-in-days 14 || echo "Failed to set retention policy"
+
+      - name: Ensure Lambda execution role exists
+        run: |
+          echo "Creating/updating Lambda execution role..."
+
+          # Create trust policy
+          cat > trust-policy.json << 'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "lambda.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+          EOF
+
+          # Create or update the role
+          aws iam create-role \
+            --role-name lambda-execution-role \
+            --assume-role-policy-document file://trust-policy.json \
+            --description "Lambda execution role for child-allowance-tracker" || \
+          aws iam update-assume-role-policy \
+            --role-name lambda-execution-role \
+            --policy-document file://trust-policy.json
+
+          # Attach basic Lambda execution policy
+          aws iam attach-role-policy \
+            --role-name lambda-execution-role \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole || \
+            echo "Policy already attached"
+
+          # Create custom policy for DynamoDB and other services
+          cat > lambda-policy.json << 'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "logs:CreateLogGroup",
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents",
+                  "logs:DescribeLogGroups",
+                  "logs:DescribeLogStreams"
+                ],
+                "Resource": "arn:aws:logs:us-east-1:960311492155:*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:GetItem",
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                  "dynamodb:DeleteItem",
+                  "dynamodb:Query",
+                  "dynamodb:Scan"
+                ],
+                "Resource": "arn:aws:dynamodb:us-east-1:960311492155:table/allowance-data-production"
+              }
+            ]
+          }
+          EOF
+
+          # Put the inline policy
+          aws iam put-role-policy \
+            --role-name lambda-execution-role \
+            --policy-name LambdaCustomPolicy \
+            --policy-document file://lambda-policy.json
+
+          echo "Waiting for role to propagate..."
+          sleep 10
+
+      - name: Debug deployment package structure
+        run: |
+          echo "=== DEPLOYMENT PACKAGE ANALYSIS ==="
+          echo "Full deployment package contents:"
+          unzip -l deployment.zip
+
+          echo ""
+          echo "=== CHECKING CRITICAL FILES ==="
+          echo "lambda_function.py exists:"
+          unzip -l deployment.zip | grep "lambda_function.py" || echo "❌ MISSING"
+
+          echo "app.py exists:"
+          unzip -l deployment.zip | grep "app.py" || echo "❌ MISSING"
+
+          echo "awsgi module:"
+          unzip -l deployment.zip | grep "awsgi" || echo "❌ MISSING"
+
+          echo "flask module:"
+          unzip -l deployment.zip | grep "flask" || echo "❌ MISSING"
+
+          echo ""
+          echo "=== TESTING PACKAGE EXTRACTION ==="
+          # Extract and test imports
+          mkdir test_extract
+          cd test_extract
+          unzip -q ../deployment.zip
+
+          echo "Testing Python imports..."
+          python3 -c "
+          import sys
+          print('Python version:', sys.version)
+          print('Current directory contents:', $(ls -la | head -10))
+
+          try:
+              import lambda_function
+              print('✅ lambda_function imported successfully')
+          except Exception as e:
+              print('❌ lambda_function import failed:', e)
+
+          try:
+              import awsgi
+              print('✅ awsgi imported successfully')
+          except Exception as e:
+              print('❌ awsgi import failed:', e)
+
+          try:
+              from app import app
+              print('✅ Flask app imported successfully')
+          except Exception as e:
+              print('❌ Flask app import failed:', e)
+          " || echo "Python test failed"
+
       - name: Deploy to Lambda
         run: |
           # Check if function exists
@@ -224,6 +364,25 @@ jobs:
               echo "✅ Environment variables unchanged. Skipping configuration update."
             fi
           fi
+
+      - name: Wait for function to be truly ready
+        run: |
+          echo "Waiting for function to initialize..."
+          sleep 30
+
+          # Check function state multiple times
+          for i in {1..10}; do
+            STATE=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.State' --output text)
+            STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
+            echo "Attempt $i: State=$STATE, Status=$STATUS"
+
+            if [ "$STATE" = "Active" ] && [ "$STATUS" = "Successful" ]; then
+              echo "✅ Function is ready!"
+              break
+            fi
+
+            sleep 5
+          done
 
       - name: Verify Lambda configuration
         run: |
@@ -370,3 +529,14 @@ jobs:
             --start-time $(date -d '2 minutes ago' +%s)000 \
             --query 'events[*].message' \
             --output text || echo "No logs found"
+
+      - name: Check Lambda execution role
+        run: |
+          echo "Checking Lambda execution role..."
+          aws iam get-role --role-name lambda-execution-role --query 'Role.AssumeRolePolicyDocument' || echo "Role not found"
+
+          echo "Checking attached policies..."
+          aws iam list-attached-role-policies --role-name lambda-execution-role || echo "Failed to list policies"
+
+          echo "Checking inline policies..."
+          aws iam list-role-policies --role-name lambda-execution-role || echo "Failed to list inline policies"

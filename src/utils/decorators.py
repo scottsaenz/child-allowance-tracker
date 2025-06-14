@@ -4,7 +4,6 @@ import time
 from functools import wraps
 
 from flask import abort, request
-
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

@@ -17,14 +17,22 @@ jobs:
         with:
           version: "latest"
 
-      - name: Set up Python
-        run: uv python install 3.13
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
 
       - name: Install dependencies (including dev)
         run: uv sync --dev
 
       - name: Run tests
         run: uv run pytest -v
+
+      - name: Check available Python versions
+        run: |
+          ls /opt/hostedtoolcache/Python/
+          python3 --version
+          which python3
 
   deploy:
     needs: test
@@ -39,8 +47,10 @@ jobs:
         with:
           version: "latest"
 
-      - name: Set up Python
-        run: uv python install 3.13
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
 
       - name: Install production dependencies only
         run: uv sync --no-dev  # Removed unnecessary pytest install

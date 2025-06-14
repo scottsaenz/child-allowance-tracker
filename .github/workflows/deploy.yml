@@ -131,11 +131,28 @@ jobs:
             echo "Lambda execution role already exists"
           fi
 
-      - name: Deploy to Lambda
+      - name: Create environment variables JSON
         env:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
           AUTHORIZED_EMAILS: ${{ secrets.AUTHORIZED_EMAILS }}
+        run: |
+          # Create environment variables JSON file
+          jq -n \
+            --arg sheets_id "$GOOGLE_SHEETS_ID" \
+            --arg service_account "$GOOGLE_SERVICE_ACCOUNT_JSON" \
+            --arg emails "$AUTHORIZED_EMAILS" \
+            '{
+              Variables: {
+                GOOGLE_SHEETS_ID: $sheets_id,
+                GOOGLE_SERVICE_ACCOUNT_JSON: $service_account,
+                AUTHORIZED_EMAILS: $emails,
+                DYNAMODB_TABLE: "allowance-data-production",
+                LOG_LEVEL: "INFO"
+              }
+            }' > env-vars.json
+
+      - name: Deploy to Lambda
         run: |
           # Check if function exists
           if ! aws lambda get-function --function-name child-allowance-tracker 2>/dev/null; then
@@ -148,7 +165,7 @@ jobs:
               --zip-file fileb://deployment.zip \
               --timeout 30 \
               --memory-size 256 \
-              --environment Variables="{GOOGLE_SHEETS_ID=${GOOGLE_SHEETS_ID},GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON},AUTHORIZED_EMAILS=${AUTHORIZED_EMAILS},DYNAMODB_TABLE=allowance-data-production,LOG_LEVEL=INFO}"
+              --environment file://env-vars.json
 
             echo "Creating function URL..."
             aws lambda create-function-url-config \
@@ -164,7 +181,7 @@ jobs:
 
             aws lambda update-function-configuration \
               --function-name child-allowance-tracker \
-              --environment Variables="{GOOGLE_SHEETS_ID=${GOOGLE_SHEETS_ID},GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON},AUTHORIZED_EMAILS=${AUTHORIZED_EMAILS},DYNAMODB_TABLE=allowance-data-production,LOG_LEVEL=INFO}"
+              --environment file://env-vars.json
           fi
 
       - name: Get Function URL

@@ -74,7 +74,7 @@ jobs:
             echo "Creating Lambda execution role..."
 
             # Create trust policy
-            cat > trust-policy.json << EOF
+            cat > trust-policy.json << 'EOF'
           {
             "Version": "2012-10-17",
             "Statement": [
@@ -100,7 +100,7 @@ jobs:
               --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
             # Create and attach DynamoDB policy
-            cat > dynamodb-policy.json << EOF
+            cat > dynamodb-policy.json << 'EOF'
           {
             "Version": "2012-10-17",
             "Statement": [
@@ -131,6 +131,20 @@ jobs:
             echo "Lambda execution role already exists"
           fi
 
+      - name: Create environment variables JSON
+        run: |
+          cat > env-vars.json << EOF
+          {
+            "Variables": {
+              "GOOGLE_SHEETS_ID": "${{ secrets.GOOGLE_SHEETS_ID }}",
+              "GOOGLE_SERVICE_ACCOUNT_JSON": "${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}",
+              "AUTHORIZED_EMAILS": "${{ secrets.AUTHORIZED_EMAILS }}",
+              "DYNAMODB_TABLE": "allowance-data-production",
+              "LOG_LEVEL": "INFO"
+            }
+          }
+          EOF
+
       - name: Deploy to Lambda
         run: |
           # Check if function exists
@@ -144,13 +158,7 @@ jobs:
               --zip-file fileb://deployment.zip \
               --timeout 30 \
               --memory-size 256 \
-              --environment Variables='{
-                "GOOGLE_SHEETS_ID":"${{ secrets.GOOGLE_SHEETS_ID }}",
-                "GOOGLE_SERVICE_ACCOUNT_JSON":"${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}",
-                "AUTHORIZED_EMAILS":"${{ secrets.AUTHORIZED_EMAILS }}",
-                "DYNAMODB_TABLE":"allowance-data-production",
-                "LOG_LEVEL":"INFO"
-              }'
+              --environment file://env-vars.json
 
             echo "Creating function URL..."
             aws lambda create-function-url-config \
@@ -166,16 +174,11 @@ jobs:
 
             aws lambda update-function-configuration \
               --function-name child-allowance-tracker \
-              --environment Variables='{
-                "GOOGLE_SHEETS_ID":"${{ secrets.GOOGLE_SHEETS_ID }}",
-                "GOOGLE_SERVICE_ACCOUNT_JSON":"${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}",
-                "AUTHORIZED_EMAILS":"${{ secrets.AUTHORIZED_EMAILS }}",
-                "DYNAMODB_TABLE":"allowance-data-production",
-                "LOG_LEVEL":"INFO"
-              }'
+              --environment file://env-vars.json
           fi
 
       - name: Get Function URL
         run: |
           URL=$(aws lambda get-function-url-config --function-name child-allowance-tracker --query 'FunctionUrl' --output text 2>/dev/null || echo "No URL configured")
-          echo "Function URL: $URL"
+          echo "🚀 Function URL: $URL"
+          echo "Function URL: $URL" >> $GITHUB_STEP_SUMMARY

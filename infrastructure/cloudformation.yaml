@@ -1,14 +1,27 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
+Description: 'Child Allowance Tracker - Serverless application'
 
 Parameters:
   Environment:
     Type: String
     Default: production
-    AllowedValues: [production, staging]
+    AllowedValues: [production, staging, development]
+    Description: Environment name
+
+  AuthorizedEmails:
+    Type: String
+    Description: Comma-separated list of authorized email addresses
+    Default: ""
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.12
 
 Resources:
-  # DynamoDB Tables
+  # DynamoDB Table
   AllowanceTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -24,11 +37,17 @@ Resources:
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: child-allowance-tracker
 
-  # IAM Role for Lambda
+  # Lambda Execution Role
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub 'child-allowance-tracker-role-${Environment}'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -53,48 +72,87 @@ Resources:
                   - dynamodb:Scan
                 Resource: !GetAtt AllowanceTable.Arn
 
+  # Lambda Function
   ChildAllowanceFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub 'child-allowance-tracker-${Environment}'
-      CodeUri: ../
+      CodeUri: ../src/
       Handler: lambda_function.lambda_handler
-      Runtime: python3.12  # 3.13 not available yet
-      Timeout: 30
-      MemorySize: 256
       Role: !GetAtt LambdaExecutionRole.Arn
       Environment:
         Variables:
           FLASK_ENV: !Ref Environment
           DYNAMODB_TABLE: !Ref AllowanceTable
-          GOOGLE_SHEETS_ID: "1vawTqCZwB7G104TUUckJKDytPwKtatXsdvxbSc6ypRs"
+          AUTHORIZED_EMAILS: !Ref AuthorizedEmails
+          LOG_LEVEL: INFO
       Events:
-        Api:
-          Type: Api
-          Properties:
-            Path: /{proxy+}
-            Method: ANY
-            RestApiId: !Ref ApiGateway
-        Root:
+        ApiRoot:
           Type: Api
           Properties:
             Path: /
             Method: ANY
             RestApiId: !Ref ApiGateway
+        ApiProxy:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref ApiGateway
 
+  # API Gateway
   ApiGateway:
     Type: AWS::Serverless::Api
     Properties:
+      Name: !Sub 'child-allowance-tracker-api-${Environment}'
       StageName: !Ref Environment
       Cors:
         AllowMethods: "'*'"
         AllowHeaders: "'*'"
         AllowOrigin: "'*'"
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          title: Child Allowance Tracker API
+          version: '1.0'
+        paths:
+          /:
+            x-amazon-apigateway-any-method:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChildAllowanceFunction.Arn}/invocations'
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChildAllowanceFunction.Arn}/invocations'
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChildAllowanceFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ApiGateway}/*/*'
 
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
   DynamoDBTable:
     Description: DynamoDB table name
     Value: !Ref AllowanceTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  LambdaFunction:
+    Description: Lambda function name
+    Value: !Ref ChildAllowanceFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunction'

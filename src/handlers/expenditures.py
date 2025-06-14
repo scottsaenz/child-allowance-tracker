@@ -1,30 +1,46 @@
-from flask import Blueprint, request, jsonify
-from services.google_sheets import append_expenditure, get_expenditures
-from handlers.auth import is_user_authorized
-from models.expenditure import Expenditure
+from services.database import DynamoDBService
+from services.google_sheets import GoogleSheetsService
+from utils.logger import get_logger
 
-expenditures_bp = Blueprint('expenditures', __name__)
+logger = get_logger(__name__)
 
-@expenditures_bp.route('/expenditures', methods=['POST'])
-def post_expenditure():
-    if not is_user_authorized(request.json.get('user_id')):
-        return jsonify({"error": "Unauthorized"}), 403
 
-    data = request.json
+def post_expenditure(child_name, amount, date, description):
+    """Post expenditure to both Google Sheets and DynamoDB"""
+    logger.info(f"Posting expenditure for {child_name}: ${amount}")
+
     try:
-        expenditure = Expenditure(
-            amount=data['amount'],
-            date=data['date'],
-            description=data['description']
+        # Post to Google Sheets
+        sheets_service = GoogleSheetsService()
+        sheets_success = sheets_service.add_expenditure(
+            child_name, amount, date, description
         )
-        append_expenditure(expenditure)
-        return jsonify({"message": "Expenditure added successfully"}), 201
-    except KeyError as e:
-        return jsonify({"error": f"Missing field: {str(e)}"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
-@expenditures_bp.route('/expenditures', methods=['GET'])
-def get_all_expenditures():
-    expenditures = get_expenditures()
-    return jsonify(expenditures), 200
+        # Post to DynamoDB
+        db_service = DynamoDBService()
+        db_success = db_service.save_expenditure(child_name, amount, date, description)
+
+        if sheets_success and db_success:
+            logger.info(f"Successfully posted expenditure for {child_name}")
+            return True
+        else:
+            logger.warning(f"Partial failure posting expenditure for {child_name}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error posting expenditure for {child_name}: {e}")
+        return False
+
+
+def get_expenditures():
+    """Get expenditures from DynamoDB"""
+    logger.info("Retrieving all expenditures")
+
+    try:
+        db_service = DynamoDBService()
+        expenditures = db_service.get_expenditures()
+        logger.info(f"Retrieved {len(expenditures)} expenditures")
+        return expenditures
+    except Exception as e:
+        logger.error(f"Error getting expenditures: {e}")
+        return []

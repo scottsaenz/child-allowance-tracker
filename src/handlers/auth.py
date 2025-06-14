@@ -1,37 +1,41 @@
-from flask import Blueprint, request, jsonify
-from functools import wraps
+import os
 
-auth_bp = Blueprint('auth', __name__)
 
-# Dummy user data for demonstration purposes
-AUTHORIZED_USERS = {
-    "user1": "password1",
-    "user2": "password2"
-}
+def get_authorized_emails():
+    """Get authorized emails from environment variables"""
+    # Get comma-separated list of emails from environment
+    authorized_emails_str = os.environ.get("AUTHORIZED_EMAILS", "")
 
-def check_auth(username, password):
-    return AUTHORIZED_USERS.get(username) == password
+    # Split by comma and strip whitespace
+    if authorized_emails_str:
+        emails = [email.strip() for email in authorized_emails_str.split(",")]
+        return [email for email in emails if email]  # Remove empty strings
 
-def authenticate():
-    return jsonify({"message": "Authentication required"}), 401
+    # Fallback for development
+    return ["development@example.com"]
 
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
-    return decorated
 
-@auth_bp.route('/login', methods=['POST'])
-def login():
-    auth = request.authorization
-    if not auth or not check_auth(auth.username, auth.password):
-        return authenticate()
-    return jsonify({"message": "Login successful"}), 200
+def is_authorized(request):
+    """Check if the request is from an authorized user"""
+    # For now, implement basic authorization
+    # In production, implement proper Google OAuth
 
-@auth_bp.route('/restricted', methods=['GET'])
-@requires_auth
-def restricted_area():
-    return jsonify({"message": "Welcome to the restricted area!"}), 200
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        return False
+
+    # TODO: Implement proper Google OAuth verification
+    # For development, allow all requests
+    return True
+
+
+def is_user_authorized(email):
+    """Check if user email is in authorized list"""
+    authorized_emails = get_authorized_emails()
+    return email.lower() in [auth_email.lower() for auth_email in authorized_emails]
+
+
+def get_user_email(request):
+    """Extract user email from request"""
+    # TODO: Implement proper email extraction from OAuth token
+    return "development@example.com"

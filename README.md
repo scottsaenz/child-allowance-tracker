@@ -142,12 +142,12 @@ def dashboard():
 def expenditures():
     if not is_authorized(request):
         return jsonify({"error": "Unauthorized"}), 403
-    
+
     data = request.json
     amount = data.get('amount')
     description = data.get('description')
     date = data.get('date')
-    
+
     if post_expenditure(amount, description, date):
         return jsonify({"message": "Expenditure posted successfully"}), 201
     else:
@@ -172,7 +172,7 @@ class DynamoDBService:
         self.dynamodb = boto3.resource('dynamodb')
         self.table_name = os.environ.get('DYNAMODB_TABLE')
         self.table = self.dynamodb.Table(self.table_name)
-    
+
     def save_expenditure(self, child_name, amount, date, description):
         """Save expenditure to DynamoDB"""
         item = {
@@ -183,10 +183,10 @@ class DynamoDBService:
             'description': description,
             'created_at': datetime.now().isoformat()
         }
-        
+
         self.table.put_item(Item=item)
         return True
-    
+
     def get_total_spent(self, child_name):
         """Calculate total spent by a child"""
         expenditures = self.get_expenditures(child_name)
@@ -209,23 +209,23 @@ class GoogleSheetsService:
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive"
         ]
-        
+
         # Get credentials from environment variable
         service_account_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
         service_account_info = json.loads(service_account_json)
-        
+
         creds = Credentials.from_service_account_info(
-            service_account_info, 
+            service_account_info,
             scopes=scope
         )
-        
+
         self.client = gspread.authorize(creds)
         self.sheet_id = os.environ.get('GOOGLE_SHEETS_ID')
-    
+
     def get_allowance_data(self):
         sheet = self.client.open_by_key(self.sheet_id).worksheet("Allowance Earned")
         return sheet.get_all_records()
-    
+
     def add_expenditure(self, who, cost, date, description):
         sheet = self.client.open_by_key(self.sheet_id).worksheet("Sheet1")
         sheet.append_row([who, cost, date, description])
@@ -371,20 +371,20 @@ This serverless architecture is designed for minimal costs:
 ## :material-help: Troubleshooting
 
 ??? question "Common Issues"
-    
+
     **Lambda function not updating?**
     ```bash
     # Check function exists
     aws lambda get-function --function-name child-allowance-tracker
-    
+
     # Manual deployment
     ./scripts/deploy.sh
     ```
-    
+
     **Google Sheets access denied?**
     - Verify service account has sheet access
     - Check environment variable format
-    
+
     **DynamoDB permission errors?**
     - Ensure Lambda role has DynamoDB permissions
     - Check table name in environment variables

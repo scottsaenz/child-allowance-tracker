@@ -150,20 +150,58 @@ jobs:
               --auth-type NONE || true
 
           else
-            echo "Updating existing Lambda function..."
+            echo "Updating existing Lambda function code..."
             aws lambda update-function-code \
               --function-name child-allowance-tracker \
               --zip-file fileb://deployment.zip
 
+            echo "Waiting for function update to complete..."
+            for i in {1..30}; do
+              STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
+              echo "Update status: $STATUS (attempt $i/30)"
+
+              if [ "$STATUS" = "Successful" ]; then
+                echo "Function update completed successfully"
+                break
+              elif [ "$STATUS" = "Failed" ]; then
+                echo "Function update failed"
+                exit 1
+              fi
+
+              sleep 10
+            done
+
+            if [ "$STATUS" != "Successful" ]; then
+              echo "Function update timed out"
+              exit 1
+            fi
+
+            echo "Updating Lambda function configuration..."
             aws lambda update-function-configuration \
               --function-name child-allowance-tracker \
               --environment file://env-vars.json
+
+            echo "Waiting for configuration update to complete..."
+            for i in {1..30}; do
+              STATUS=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.LastUpdateStatus' --output text)
+              echo "Configuration update status: $STATUS (attempt $i/30)"
+
+              if [ "$STATUS" = "Successful" ]; then
+                echo "Configuration update completed successfully"
+                break
+              elif [ "$STATUS" = "Failed" ]; then
+                echo "Configuration update failed"
+                exit 1
+              fi
+
+              sleep 5
+            done
           fi
 
       - name: Test deployed function
         run: |
           echo "Waiting for function to be ready..."
-          sleep 10
+          sleep 15
 
           echo "Testing function directly..."
           aws lambda invoke \

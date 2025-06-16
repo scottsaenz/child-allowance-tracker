@@ -25,7 +25,23 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: |
+          uv sync --dev
+
+      - name: Verify and install ruff if needed
+        run: |
+          echo "=== CHECKING RUFF INSTALLATION ==="
+          uv run python --version
+          uv run pip list | grep ruff || echo "Ruff not found in pip list"
+
+          # Try to run ruff
+          if ! uv run ruff --version > /dev/null 2>&1; then
+            echo "Ruff not found, installing explicitly..."
+            uv add --dev ruff
+          else
+            echo "✅ Ruff is available"
+            uv run ruff --version
+          fi
 
       - name: Run tests
         run: uv run pytest tests/ -v

@@ -217,49 +217,69 @@ jobs:
       - name: Wait for deployment to be ready
         run: sleep 30
 
-      - name: Test API endpoints
+      - name: Test deployed Lambda function
         run: |
           echo "=== API GATEWAY DEBUGGING ==="
-          echo "API Endpoint: $API_ENDPOINT"
+
+          # Get API Gateway ID with better error handling
+          API_ID=$(aws apigatewayv2 get-apis --query 'Items[?Name==`child-allowance-tracker-api`].ApiId' --output text 2>/dev/null || echo "")
+
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "❌ API Gateway not found, trying alternative methods..."
+
+            # Try listing all APIs to see what's available
+            echo "=== ALL AVAILABLE APIs ==="
+            aws apigatewayv2 get-apis --query 'Items[].{Name:Name,ApiId:ApiId,Protocol:ProtocolType}' --output table || echo "Failed to list APIs"
+
+            # Try REST API instead of HTTP API
+            echo "=== CHECKING REST APIs ==="
+            aws apigateway get-rest-apis --query 'items[?name==`child-allowance-tracker-api`].id' --output text || echo "No REST APIs found"
+
+            # Exit early if no API found
+            echo "❌ Cannot proceed without API Gateway ID"
+            exit 1
+          fi
+
+          echo "API Endpoint: https://${API_ID}.execute-api.us-east-1.amazonaws.com"
           echo "Expected API Gateway ID: xt7m8ql2y6"
           echo "Current API ID: $API_ID"
 
-          # Verify API Gateway configuration
-          echo ""
-          echo "=== API GATEWAY CONFIGURATION ==="
-          aws apigatewayv2 get-api --api-id $API_ID --query '[Name,ProtocolType,Target,RouteSelectionExpression]' --output table
+          # Only proceed if we have a valid API ID
+          if [ ! -z "$API_ID" ] && [ "$API_ID" != "None" ]; then
+            echo "=== API GATEWAY CONFIGURATION ==="
+            aws apigatewayv2 get-api --api-id $API_ID --output table || echo "Failed to get API details"
 
-          echo ""
-          echo "=== API GATEWAY ROUTES ==="
-          aws apigatewayv2 get-routes --api-id $API_ID --query 'Items[*].[RouteKey,Target]' --output table
+            echo "=== API GATEWAY ROUTES ==="
+            aws apigatewayv2 get-routes --api-id $API_ID --output table || echo "Failed to get routes"
 
-          echo ""
-          echo "=== TESTING ENDPOINTS WITH VERBOSE OUTPUT ==="
+            echo "=== TESTING ENDPOINTS WITH VERBOSE OUTPUT ==="
 
-          # Test health endpoint with full debugging
-          echo "1. Testing health endpoint with verbose curl:"
-          curl -v -X GET "$API_ENDPOINT/health" \
-            -H "Accept: application/json" \
-            -H "User-Agent: GitHub-Actions-Test" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            2>&1 | head -50 || echo "Health endpoint curl failed"
+            # Test endpoints
+            API_ENDPOINT="https://${API_ID}.execute-api.us-east-1.amazonaws.com"
 
-          echo ""
-          echo "2. Testing root endpoint:"
-          curl -v -X GET "$API_ENDPOINT/" \
-            -H "Accept: text/html,application/json" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            2>&1 | head -30 || echo "Root endpoint curl failed"
+            echo "1. Testing health endpoint:"
+            curl -v -X GET "${API_ENDPOINT}/health" \
+              -H "Accept: application/json" \
+              -H "User-Agent: GitHub-Actions-Test" \
+              --max-time 30 \
+              --connect-timeout 10 || echo "Health endpoint failed"
 
-          echo ""
-          echo "3. Testing a simple GET that should work:"
-          curl -v -X GET "$API_ENDPOINT/docs" \
-            -H "Accept: text/html" \
-            --connect-timeout 10 \
-            --max-time 30 \
-            2>&1 | head -30 || echo "Docs endpoint curl failed"
+            echo ""
+            echo "2. Testing root endpoint:"
+            curl -v -X GET "${API_ENDPOINT}/" \
+              -H "Accept: application/json" \
+              --max-time 30 \
+              --connect-timeout 10 || echo "Root endpoint failed"
+
+            echo ""
+            echo "3. Testing debug endpoint:"
+            curl -v -X GET "${API_ENDPOINT}/debug" \
+              -H "Accept: application/json" \
+              --max-time 30 \
+              --connect-timeout 10 || echo "Debug endpoint failed"
+          else
+            echo "❌ Invalid API ID, cannot test endpoints"
+          fi
 
       - name: Check CloudWatch logs
         run: |

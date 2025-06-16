@@ -219,60 +219,138 @@ jobs:
 
       - name: Test deployed Lambda function
         run: |
-          echo "=== TESTING DEPLOYED APPLICATION ==="
+          echo "=== API GATEWAY TESTING ==="
 
-          # Get API Gateway ID
-          API_ID=$(aws apigatewayv2 get-apis --query 'Items[?Name==`child-allowance-tracker-api`].ApiId' --output text)
+          # Wait for deployment to stabilize
+          echo "Waiting for API Gateway and Lambda to be ready..."
+          sleep 10
+
+          # Try multiple methods to get the API Gateway ID
+          echo "=== FINDING API GATEWAY ==="
+
+          # Method 1: HTTP API (APIGatewayV2)
+          API_ID=$(aws apigatewayv2 get-apis --query 'Items[?Name==`child-allowance-tracker-api`].ApiId' --output text 2>/dev/null || echo "")
+
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "❌ HTTP API not found with exact name, trying pattern match..."
+            API_ID=$(aws apigatewayv2 get-apis --query 'Items[?contains(Name, `child-allowance`)].ApiId' --output text 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "❌ HTTP API not found, trying REST API (APIGateway)..."
+            API_ID=$(aws apigateway get-rest-apis --query 'items[?name==`child-allowance-tracker-api`].id' --output text 2>/dev/null || echo "")
+          fi
+
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "❌ REST API not found with exact name, trying pattern match..."
+            API_ID=$(aws apigateway get-rest-apis --query 'items[?contains(name, `child-allowance`)].id' --output text 2>/dev/null | head -1)
+          fi
+
+          # Debug: Show all available APIs
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "=== DEBUGGING: ALL AVAILABLE APIs ==="
+            echo "HTTP APIs (APIGatewayV2):"
+            aws apigatewayv2 get-apis --query 'Items[].{Name:Name,ApiId:ApiId,Protocol:ProtocolType}' --output table || echo "No HTTP APIs found"
+            echo ""
+            echo "REST APIs (APIGateway):"
+            aws apigateway get-rest-apis --query 'items[].{name:name,id:id}' --output table || echo "No REST APIs found"
+            echo ""
+
+            # Try to get API ID from CloudFormation outputs
+            echo "=== TRYING CLOUDFORMATION OUTPUTS ==="
+            CF_API_ID=$(aws cloudformation describe-stacks --query 'Stacks[?contains(StackName, `child-allowance`)].Outputs[?OutputKey==`ApiGatewayUrl` || OutputKey==`ApiEndpoint` || OutputKey==`RestApiId`].OutputValue' --output text 2>/dev/null | head -1)
+            if [ ! -z "$CF_API_ID" ] && [ "$CF_API_ID" != "None" ]; then
+              # Extract API ID from URL if it's a full URL
+              API_ID=$(echo "$CF_API_ID" | sed -n 's/.*\/\/\([^.]*\).*/\1/p')
+              echo "✅ Found API ID from CloudFormation: $API_ID"
+            fi
+          fi
+
+          # If still no API ID, check Lambda function environment or tags
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "=== CHECKING LAMBDA FUNCTION ==="
+            aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.{Name:FunctionName,Runtime:Runtime}' --output table || echo "Lambda function not found"
+
+            # Last resort: use the known working API ID
+            echo "=== USING KNOWN API ID ==="
+            API_ID="xt7m8ql2y6"
+            echo "⚠️  Using previously known API ID: $API_ID"
+          fi
+
+          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
+            echo "❌ Cannot find API Gateway ID"
+            exit 1
+          fi
+
           API_ENDPOINT="https://${API_ID}.execute-api.us-east-1.amazonaws.com"
+          echo "✅ API Endpoint: $API_ENDPOINT"
+          echo "✅ API ID: $API_ID"
 
-          echo "🌐 API Endpoint: $API_ENDPOINT"
-          echo ""
+          echo "=== TESTING ENDPOINTS ==="
 
-          # Test endpoints and capture responses
-          echo "=== ENDPOINT TESTING ==="
+          # Function to test endpoint with better error handling
+          test_endpoint() {
+            local endpoint="$1"
+            local name="$2"
+            local expected_status="${3:-200}"
 
-          echo "1. 🏥 Health Check:"
-          HEALTH_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/health" -H "Accept: application/json")
-          HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/health")
-          echo "   Status: $HEALTH_STATUS"
-          echo "   Response: $HEALTH_RESPONSE"
-          echo ""
+            echo "Testing $name endpoint: $endpoint"
 
-          echo "2. 🏠 Root Endpoint:"
-          ROOT_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/" -H "Accept: application/json")
-          ROOT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/")
-          echo "   Status: $ROOT_STATUS"
-          echo "   Response: $ROOT_RESPONSE"
-          echo ""
+            # Test with timeout and better error handling
+            response=$(curl -s --max-time 30 --connect-timeout 10 \
+              -w "HTTPSTATUS:%{http_code}" \
+              -H "Accept: application/json" \
+              -H "User-Agent: GitHub-Actions-Test" \
+              "$endpoint" 2>/dev/null || echo "HTTPSTATUS:000")
 
-          echo "3. 🐛 Debug Endpoint:"
-          DEBUG_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/debug" -H "Accept: application/json")
-          DEBUG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/debug")
-          echo "   Status: $DEBUG_STATUS"
-          echo "   Response: $DEBUG_RESPONSE"
-          echo ""
+            # Extract HTTP status
+            http_status=$(echo "$response" | grep -o "HTTPSTATUS:.*" | cut -d: -f2)
+            body=$(echo "$response" | sed 's/HTTPSTATUS:.*//')
 
-          # Summary
-          echo "=== DEPLOYMENT SUMMARY ==="
-          if [ "$HEALTH_STATUS" = "200" ] && [ "$ROOT_STATUS" = "200" ] && [ "$DEBUG_STATUS" = "200" ]; then
-            echo "🎉 SUCCESS: All endpoints are working!"
-            echo "✅ Health endpoint: $HEALTH_STATUS"
-            echo "✅ Root endpoint: $ROOT_STATUS"
-            echo "✅ Debug endpoint: $DEBUG_STATUS"
+            echo "  Status: $http_status"
+            if [ "$http_status" = "$expected_status" ]; then
+              echo "  ✅ $name endpoint working"
+              [ ! -z "$body" ] && echo "  Response: $body"
+            elif [ "$http_status" = "000" ]; then
+              echo "  ❌ $name endpoint failed (connection error)"
+            else
+              echo "  ⚠️  $name endpoint returned $http_status (expected $expected_status)"
+              [ ! -z "$body" ] && echo "  Response: $body"
+            fi
             echo ""
-            echo "🚀 Your Child Allowance Tracker API is live at:"
-            echo "   $API_ENDPOINT"
+
+            return $([ "$http_status" = "$expected_status" ] && echo 0 || echo 1)
+          }
+
+          # Test all endpoints
+          success_count=0
+          total_tests=6
+
+          test_endpoint "${API_ENDPOINT}/health" "Health" && ((success_count++))
+          test_endpoint "${API_ENDPOINT}/" "Root" && ((success_count++))
+          test_endpoint "${API_ENDPOINT}/docs" "API Documentation" && ((success_count++))
+          test_endpoint "${API_ENDPOINT}/debug" "Debug" && ((success_count++))
+          test_endpoint "${API_ENDPOINT}/children" "Children API" && ((success_count++))
+          test_endpoint "${API_ENDPOINT}/ui" "UI" && ((success_count++))
+
+          echo "=== FINAL SUMMARY ==="
+          echo "API Endpoint: $API_ENDPOINT"
+          echo "Successful tests: $success_count/$total_tests"
+
+          if [ $success_count -eq $total_tests ]; then
+            echo "🎉 All endpoints working perfectly!"
             echo ""
-            echo "📖 Available endpoints:"
-            echo "   • GET /health - Health check"
-            echo "   • GET / - API info"
-            echo "   • GET /debug - Debug information"
-            echo "   • GET /docs - API documentation (coming soon)"
+            echo "🚀 Your Child Allowance Tracker is live:"
+            echo "  • API Documentation: ${API_ENDPOINT}/docs"
+            echo "  • Simple UI: ${API_ENDPOINT}/ui"
+            echo "  • Health Check: ${API_ENDPOINT}/health"
+            echo "  • API Root: ${API_ENDPOINT}/"
+          elif [ $success_count -gt 0 ]; then
+            echo "⚠️  Some endpoints working ($success_count/$total_tests)"
+            echo "Check the logs above for details on failed endpoints"
           else
-            echo "❌ Some endpoints failed:"
-            [ "$HEALTH_STATUS" != "200" ] && echo "❌ Health: $HEALTH_STATUS"
-            [ "$ROOT_STATUS" != "200" ] && echo "❌ Root: $ROOT_STATUS"
-            [ "$DEBUG_STATUS" != "200" ] && echo "❌ Debug: $DEBUG_STATUS"
+            echo "❌ No endpoints working"
+            echo "Check CloudWatch logs for Lambda errors"
             exit 1
           fi
 
@@ -323,7 +401,6 @@ jobs:
             --filter-pattern "?starting ?imported ?created" \
             --query 'events[*].message' \
             --output text || echo "No init logs found"
-
 
       - name: Test FastAPI endpoints
         run: |

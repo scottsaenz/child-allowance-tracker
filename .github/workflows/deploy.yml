@@ -63,10 +63,14 @@ jobs:
           # Install dependencies in the Lambda environment
           RUN pip install --no-cache-dir -r requirements.txt -t /var/task/
 
-          # List what was installed for debugging
-          RUN find /var/task -name "*pydantic*" -type d
-          RUN find /var/task -name "*fastapi*" -type d
-          RUN ls -la /var/task/pydantic_core/ || echo "pydantic_core not found"
+          # List what was installed for debugging (using ls instead of find)
+          RUN ls -la /var/task/ | grep pydantic || echo "No pydantic directories found"
+          RUN ls -la /var/task/ | grep fastapi || echo "No fastapi directories found"
+          RUN ls -la /var/task/pydantic_core/ || echo "pydantic_core directory not found"
+          RUN ls -la /var/task/pydantic_core/ | head -5 || echo "pydantic_core contents not accessible"
+
+          # Check for the critical _pydantic_core binary
+          RUN ls -la /var/task/pydantic_core/*pydantic_core* || echo "pydantic_core binary not found"
 
           # Create deployment directory
           RUN mkdir -p /deployment
@@ -101,9 +105,12 @@ jobs:
           docker run --rm -v $(pwd)/deployment:/output lambda-builder sh -c "cp -r /deployment/* /output/"
 
           echo "=== VERIFYING EXTRACTED PACKAGES ==="
-          find deployment -name "*pydantic_core*" -type d | head -5
-          find deployment -name "_pydantic_core*" | head -5
+          ls -la deployment/ | grep pydantic || echo "No pydantic directories found"
           ls -la deployment/pydantic_core/ || echo "pydantic_core directory not found"
+          ls -la deployment/pydantic_core/ | head -10 || echo "pydantic_core contents not accessible"
+
+          # Check for the critical binary file
+          ls -la deployment/pydantic_core/*pydantic_core* || echo "pydantic_core binary not found"
 
           # Copy source code
           cp -r src/* deployment/
@@ -146,95 +153,6 @@ jobs:
                 POWERTOOLS_LOG_LEVEL: "DEBUG"
               }
             }' > env-vars.json
-
-      - name: Create deployment package
-        run: |
-          mkdir deployment
-
-          # Export dependencies without hashes and exclude dev dependencies
-          uv export --format requirements-txt --no-hashes --no-dev > requirements.txt
-
-          # Install dependencies to deployment directory
-          pip install -r requirements.txt -t deployment/ --no-deps
-
-          # Copy source code
-          cp -r src/* deployment/
-
-          # Copy lambda handler
-          cp lambda_function.py deployment/
-
-          # Create deployment zip
-          cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*" "*.pytest_cache*"
-
-      - name: Verify deployment package
-        run: |
-          echo "Checking deployment package contents..."
-          unzip -l deployment.zip | head -30
-
-          echo ""
-          echo "=== CHECKING CRITICAL FILES ==="
-          echo "lambda_function.py exists:"
-          unzip -l deployment.zip | grep "lambda_function.py" || echo "❌ MISSING"
-
-          echo "app.py exists:"
-          unzip -l deployment.zip | grep "app.py" || echo "❌ MISSING"
-
-          echo "fastapi module:"
-          unzip -l deployment.zip | grep "fastapi" || echo "❌ MISSING"
-
-          echo "mangum module:"
-          unzip -l deployment.zip | grep "mangum" || echo "❌ MISSING"
-
-          echo "aws_lambda_powertools module:"
-          unzip -l deployment.zip | grep "aws_lambda_powertools" || echo "❌ MISSING"
-
-          echo "boto3 module:"
-          unzip -l deployment.zip | grep "boto3" || echo "❌ MISSING"
-
-          echo ""
-          echo "=== TESTING IMPORTS ==="
-          # Extract and test imports
-          mkdir -p test_extract
-          cd test_extract
-          unzip -q ../deployment.zip
-
-          python3 -c "
-          import sys, os
-          print('Testing FastAPI and PowerTools imports...')
-
-          try:
-              from fastapi import FastAPI
-              print('✅ FastAPI imported successfully')
-          except Exception as e:
-              print(f'❌ FastAPI import failed: {e}')
-
-          try:
-              from mangum import Mangum
-              print('✅ Mangum imported successfully')
-          except Exception as e:
-              print(f'❌ Mangum import failed: {e}')
-
-          try:
-              from aws_lambda_powertools import Logger, Tracer, Metrics
-              print('✅ AWS PowerTools imported successfully')
-          except Exception as e:
-              print(f'❌ PowerTools import failed: {e}')
-
-          try:
-              import boto3
-              print('✅ boto3 imported successfully')
-          except Exception as e:
-              print(f'❌ boto3 import failed: {e}')
-
-          try:
-              import lambda_function
-              print('✅ lambda_function imported successfully')
-              print(f'Handler function exists: {hasattr(lambda_function, \"lambda_handler\")}')
-          except Exception as e:
-              print(f'❌ lambda_function import failed: {e}')
-              import traceback
-              traceback.print_exc()
-          " || echo "Python test failed"
 
       - name: Create CloudWatch log group
         run: |

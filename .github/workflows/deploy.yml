@@ -311,28 +311,46 @@ jobs:
             if [ "$http_status" = "$expected_status" ]; then
               echo "  ✅ $name endpoint working"
               [ ! -z "$body" ] && echo "  Response: $body"
+              return 0
             elif [ "$http_status" = "000" ]; then
               echo "  ❌ $name endpoint failed (connection error)"
+              return 1
             else
               echo "  ⚠️  $name endpoint returned $http_status (expected $expected_status)"
               [ ! -z "$body" ] && echo "  Response: $body"
+              return 1
             fi
-            echo ""
-
-            return $([ "$http_status" = "$expected_status" ] && echo 0 || echo 1)
           }
 
-          # Test all endpoints
+          # Test all endpoints - use safer arithmetic
           success_count=0
           total_tests=6
 
-          test_endpoint "${API_ENDPOINT}/health" "Health" && ((success_count++))
-          test_endpoint "${API_ENDPOINT}/" "Root" && ((success_count++))
-          test_endpoint "${API_ENDPOINT}/docs" "API Documentation" && ((success_count++))
-          test_endpoint "${API_ENDPOINT}/debug" "Debug" && ((success_count++))
-          test_endpoint "${API_ENDPOINT}/children" "Children API" && ((success_count++))
-          test_endpoint "${API_ENDPOINT}/ui" "UI" && ((success_count++))
+          if test_endpoint "${API_ENDPOINT}/health" "Health"; then
+            success_count=$((success_count + 1))
+          fi
 
+          if test_endpoint "${API_ENDPOINT}/" "Root"; then
+            success_count=$((success_count + 1))
+          fi
+
+          if test_endpoint "${API_ENDPOINT}/docs" "API Documentation"; then
+            success_count=$((success_count + 1))
+          fi
+
+          if test_endpoint "${API_ENDPOINT}/debug" "Debug"; then
+            success_count=$((success_count + 1))
+          fi
+
+          if test_endpoint "${API_ENDPOINT}/children" "Children API"; then
+            success_count=$((success_count + 1))
+          fi
+
+          if test_endpoint "${API_ENDPOINT}/ui" "UI"; then
+            success_count=$((success_count + 1))
+          fi
+
+          echo ""
           echo "=== FINAL SUMMARY ==="
           echo "API Endpoint: $API_ENDPOINT"
           echo "Successful tests: $success_count/$total_tests"

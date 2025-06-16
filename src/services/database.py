@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import boto3
+
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

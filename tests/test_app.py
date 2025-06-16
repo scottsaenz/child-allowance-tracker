@@ -28,8 +28,9 @@ def test_app_can_be_imported():
 def test_fastapi_endpoints():
     """Test FastAPI endpoints if dependencies are available"""
     try:
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
 
         client = TestClient(app)
 

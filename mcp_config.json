@@ -1,0 +1,12 @@
+{
+  "filepath": "mcp_config.json",
+  "mcpServers": {
+    "fastapi-model-tester": {
+      "command": "uv",
+      "args": ["run", "python", "mcp_fastapi_tester.py"],
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}

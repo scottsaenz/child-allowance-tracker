@@ -44,7 +44,15 @@ jobs:
           fi
 
       - name: Run tests
-        run: uv run pytest tests/ -v
+        run: |
+          echo "=== RUNNING ALL TESTS ==="
+          uv run pytest tests/ -v --tb=short
+
+          echo "=== RUNNING AUTH TESTS SPECIFICALLY ==="
+          uv run pytest tests/test_auth.py tests/test_auth_integration.py -v
+
+          echo "=== TEST COVERAGE FOR AUTH MODULE ==="
+          uv run pytest tests/test_auth.py --cov=handlers.auth --cov-report=term-missing
 
       - name: Run linting
         run: |

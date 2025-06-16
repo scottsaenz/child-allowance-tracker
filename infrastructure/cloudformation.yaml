@@ -156,3 +156,61 @@ Outputs:
     Value: !Ref ChildAllowanceFunction
     Export:
       Name: !Sub '${AWS::StackName}-LambdaFunction'
+
+  # Docker Build for Lambda Layer
+  LambdaLayerBuild:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'child-allowance-tracker-layer-${Environment}'
+      Description: Lambda layer for Python dependencies
+      ContentUri: ./deployment.zip
+      CompatibleRuntimes:
+        - python3.13
+      LicenseInfo: MIT
+      RetentionPolicy: Delete
+
+  # Lambda Function with Layer
+  ChildAllowanceFunctionWithLayer:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'child-allowance-tracker-with-layer-${Environment}'
+      CodeUri: ../src/
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          FLASK_ENV: !Ref Environment
+          DYNAMODB_TABLE: !Ref AllowanceTable
+          AUTHORIZED_EMAILS: !Ref AuthorizedEmails
+          LOG_LEVEL: INFO
+      Events:
+        ApiRoot:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+            RestApiId: !Ref ApiGateway
+        ApiProxy:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref ApiGateway
+      Layers:
+        - !Ref LambdaLayerBuild
+
+  # Lambda Permission for API Gateway with Layer
+  LambdaApiGatewayPermissionWithLayer:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChildAllowanceFunctionWithLayer
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ApiGateway}/*/*'
+
+  # Output for Lambda Layer ARN
+  LambdaLayerArn:
+    Description: ARN of the Lambda layer
+    Value: !Ref LambdaLayerBuild
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaLayerArn'

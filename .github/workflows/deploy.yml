@@ -219,66 +219,61 @@ jobs:
 
       - name: Test deployed Lambda function
         run: |
-          echo "=== API GATEWAY DEBUGGING ==="
+          echo "=== TESTING DEPLOYED APPLICATION ==="
 
-          # Get API Gateway ID with better error handling
-          API_ID=$(aws apigatewayv2 get-apis --query 'Items[?Name==`child-allowance-tracker-api`].ApiId' --output text 2>/dev/null || echo "")
+          # Get API Gateway ID
+          API_ID=$(aws apigatewayv2 get-apis --query 'Items[?Name==`child-allowance-tracker-api`].ApiId' --output text)
+          API_ENDPOINT="https://${API_ID}.execute-api.us-east-1.amazonaws.com"
 
-          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
-            echo "❌ API Gateway not found, trying alternative methods..."
+          echo "🌐 API Endpoint: $API_ENDPOINT"
+          echo ""
 
-            # Try listing all APIs to see what's available
-            echo "=== ALL AVAILABLE APIs ==="
-            aws apigatewayv2 get-apis --query 'Items[].{Name:Name,ApiId:ApiId,Protocol:ProtocolType}' --output table || echo "Failed to list APIs"
+          # Test endpoints and capture responses
+          echo "=== ENDPOINT TESTING ==="
 
-            # Try REST API instead of HTTP API
-            echo "=== CHECKING REST APIs ==="
-            aws apigateway get-rest-apis --query 'items[?name==`child-allowance-tracker-api`].id' --output text || echo "No REST APIs found"
+          echo "1. 🏥 Health Check:"
+          HEALTH_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/health" -H "Accept: application/json")
+          HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/health")
+          echo "   Status: $HEALTH_STATUS"
+          echo "   Response: $HEALTH_RESPONSE"
+          echo ""
 
-            # Exit early if no API found
-            echo "❌ Cannot proceed without API Gateway ID"
-            exit 1
-          fi
+          echo "2. 🏠 Root Endpoint:"
+          ROOT_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/" -H "Accept: application/json")
+          ROOT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/")
+          echo "   Status: $ROOT_STATUS"
+          echo "   Response: $ROOT_RESPONSE"
+          echo ""
 
-          echo "API Endpoint: https://${API_ID}.execute-api.us-east-1.amazonaws.com"
-          echo "Expected API Gateway ID: xt7m8ql2y6"
-          echo "Current API ID: $API_ID"
+          echo "3. 🐛 Debug Endpoint:"
+          DEBUG_RESPONSE=$(curl -s -X GET "${API_ENDPOINT}/debug" -H "Accept: application/json")
+          DEBUG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_ENDPOINT}/debug")
+          echo "   Status: $DEBUG_STATUS"
+          echo "   Response: $DEBUG_RESPONSE"
+          echo ""
 
-          # Only proceed if we have a valid API ID
-          if [ ! -z "$API_ID" ] && [ "$API_ID" != "None" ]; then
-            echo "=== API GATEWAY CONFIGURATION ==="
-            aws apigatewayv2 get-api --api-id $API_ID --output table || echo "Failed to get API details"
-
-            echo "=== API GATEWAY ROUTES ==="
-            aws apigatewayv2 get-routes --api-id $API_ID --output table || echo "Failed to get routes"
-
-            echo "=== TESTING ENDPOINTS WITH VERBOSE OUTPUT ==="
-
-            # Test endpoints
-            API_ENDPOINT="https://${API_ID}.execute-api.us-east-1.amazonaws.com"
-
-            echo "1. Testing health endpoint:"
-            curl -v -X GET "${API_ENDPOINT}/health" \
-              -H "Accept: application/json" \
-              -H "User-Agent: GitHub-Actions-Test" \
-              --max-time 30 \
-              --connect-timeout 10 || echo "Health endpoint failed"
-
+          # Summary
+          echo "=== DEPLOYMENT SUMMARY ==="
+          if [ "$HEALTH_STATUS" = "200" ] && [ "$ROOT_STATUS" = "200" ] && [ "$DEBUG_STATUS" = "200" ]; then
+            echo "🎉 SUCCESS: All endpoints are working!"
+            echo "✅ Health endpoint: $HEALTH_STATUS"
+            echo "✅ Root endpoint: $ROOT_STATUS"
+            echo "✅ Debug endpoint: $DEBUG_STATUS"
             echo ""
-            echo "2. Testing root endpoint:"
-            curl -v -X GET "${API_ENDPOINT}/" \
-              -H "Accept: application/json" \
-              --max-time 30 \
-              --connect-timeout 10 || echo "Root endpoint failed"
-
+            echo "🚀 Your Child Allowance Tracker API is live at:"
+            echo "   $API_ENDPOINT"
             echo ""
-            echo "3. Testing debug endpoint:"
-            curl -v -X GET "${API_ENDPOINT}/debug" \
-              -H "Accept: application/json" \
-              --max-time 30 \
-              --connect-timeout 10 || echo "Debug endpoint failed"
+            echo "📖 Available endpoints:"
+            echo "   • GET /health - Health check"
+            echo "   • GET / - API info"
+            echo "   • GET /debug - Debug information"
+            echo "   • GET /docs - API documentation (coming soon)"
           else
-            echo "❌ Invalid API ID, cannot test endpoints"
+            echo "❌ Some endpoints failed:"
+            [ "$HEALTH_STATUS" != "200" ] && echo "❌ Health: $HEALTH_STATUS"
+            [ "$ROOT_STATUS" != "200" ] && echo "❌ Root: $ROOT_STATUS"
+            [ "$DEBUG_STATUS" != "200" ] && echo "❌ Debug: $DEBUG_STATUS"
+            exit 1
           fi
 
       - name: Check CloudWatch logs
@@ -329,74 +324,6 @@ jobs:
             --query 'events[*].message' \
             --output text || echo "No init logs found"
 
-      - name: Enhanced deployment package verification
-        run: |
-          echo "=== ENHANCED PACKAGE VERIFICATION ==="
-
-          # Check if we're using the right Python version in deployment
-          echo "Python version used for deployment:"
-          python3 --version
-
-          echo ""
-          echo "=== CHECKING DEPLOYMENT STRUCTURE ==="
-          unzip -l deployment.zip | grep -E "\.py$" | head -20
-
-          echo ""
-          echo "=== TESTING DEPLOYMENT PACKAGE LOCALLY ==="
-          mkdir -p local_test
-          cd local_test
-          unzip -q ../deployment.zip
-
-          # Set PYTHONPATH to current directory
-          export PYTHONPATH=".:$PYTHONPATH"
-
-          echo "Testing imports with PYTHONPATH set to current directory:"
-          python3 -c "
-          import sys
-          import os
-          print(f'Python version: {sys.version}')
-          print(f'Working directory: {os.getcwd()}')
-          print(f'Python path: {sys.path[:5]}')
-          print('Files in current directory:')
-          for f in os.listdir('.'):
-              if f.endswith('.py'):
-                  print(f'  {f}')
-          " || echo "Basic test failed"
-
-          python3 -c "
-          try:
-              import lambda_function
-              print('✅ lambda_function imported')
-
-              # Check if handler exists and is callable
-              if hasattr(lambda_function, 'lambda_handler'):
-                  handler = lambda_function.lambda_handler
-                  print(f'✅ lambda_handler exists and is callable: {callable(handler)}')
-              else:
-                  print('❌ lambda_handler not found')
-
-          except Exception as e:
-              print(f'❌ lambda_function import failed: {e}')
-              import traceback
-              traceback.print_exc()
-          " || echo "Lambda function test failed"
-
-          python3 -c "
-          try:
-              import app
-              print('✅ app module imported')
-
-              if hasattr(app, 'app'):
-                  fastapi_app = app.app
-                  print(f'✅ FastAPI app found: {type(fastapi_app)}')
-              else:
-                  print('❌ FastAPI app not found in app module')
-
-          except Exception as e:
-              print(f'❌ app import failed: {e}')
-              import traceback
-              traceback.print_exc()
-          " || echo "App test failed"
 
       - name: Test FastAPI endpoints
         run: |

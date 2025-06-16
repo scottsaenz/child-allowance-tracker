@@ -76,8 +76,18 @@ jobs:
           WORKDIR /deployment
           EOF
 
-          # Export dependencies
+          # Export dependencies and clean up local project references
           uv export --format requirements-txt --no-hashes --no-dev > requirements.txt
+
+          echo "=== ORIGINAL REQUIREMENTS.TXT ==="
+          cat requirements.txt
+
+          # Remove local project references (lines starting with -e or file://)
+          grep -v "^-e" requirements.txt | grep -v "^file://" > requirements_clean.txt
+          mv requirements_clean.txt requirements.txt
+
+          echo "=== CLEANED REQUIREMENTS.TXT ==="
+          cat requirements.txt
 
           echo "=== BUILDING LAMBDA PACKAGE IN DOCKER ==="
 

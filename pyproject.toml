@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A FastAPI web application to track children's allowances"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.104.0",
+    "fastapi>=0.115.0",
     "mangum>=0.17.0",
     "aws-lambda-powertools>=2.25.0",
     "aws-xray-sdk>=2.14.0",
@@ -16,7 +16,7 @@ dependencies = [
     "google-api-python-client>=2.88.0",
     "python-dotenv>=1.0.0",
     "uvicorn[standard]>=0.24.0",
-    "pytest>=8.4.0"
+    "pytest>=8.4.0",
 ]
 
 [project.optional-dependencies]

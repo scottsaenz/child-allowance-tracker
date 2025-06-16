@@ -1,4 +1,4 @@
-name: Deploy FastAPI to AWS Lambda
+name: Deploy to AWS
 
 on:
   push:
@@ -7,56 +7,96 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4  # Updated from v2 to v4
+        uses: astral-sh/setup-uv@v3
         with:
-          version: "latest"
+          enable-cache: true
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install dependencies (including dev)
-        run: uv sync --dev
+      - name: Install dependencies
+        run: |
+          uv sync --dev
 
       - name: Run tests
-        run: uv run pytest -v
-
-      - name: Check available Python versions
         run: |
-          ls /opt/hostedtoolcache/Python/
-          python3 --version
-          which python3
+          uv run pytest tests/ -v
 
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+      - name: Run linting
+        run: |
+          uv run ruff check --fix .
+          uv run ruff format .
 
-    steps:
-      - uses: actions/checkout@v4
+      # REPLACE THIS STEP with the Docker version
+      - name: Create Lambda-compatible deployment package using Docker
+        run: |
+          echo "=== CREATING LAMBDA-COMPATIBLE DEPLOYMENT PACKAGE ==="
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4  # Updated from v2 to v4
-        with:
-          version: "latest"
+          # Create a Dockerfile for building the package
+          cat > Dockerfile.lambda << 'EOF'
+          FROM public.ecr.aws/lambda/python:3.12
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+          # Copy requirements
+          COPY requirements.txt .
 
-      - name: Install production dependencies only
-        run: uv sync --no-dev  # Removed unnecessary pytest install
+          # Install dependencies in the Lambda environment
+          RUN pip install --no-cache-dir -r requirements.txt -t /var/task/
+
+          # List what was installed for debugging
+          RUN find /var/task -name "*pydantic*" -type d
+          RUN find /var/task -name "*fastapi*" -type d
+          RUN ls -la /var/task/pydantic_core/ || echo "pydantic_core not found"
+
+          # Create deployment directory
+          RUN mkdir -p /deployment
+          RUN cp -r /var/task/* /deployment/
+
+          # Set working directory
+          WORKDIR /deployment
+          EOF
+
+          # Export dependencies
+          uv export --format requirements-txt --no-hashes --no-dev > requirements.txt
+
+          echo "=== BUILDING LAMBDA PACKAGE IN DOCKER ==="
+
+          # Build the Docker image
+          docker build -f Dockerfile.lambda -t lambda-builder .
+
+          # Create deployment directory
+          mkdir -p deployment
+
+          # Extract the built packages from Docker
+          docker run --rm -v $(pwd)/deployment:/output lambda-builder sh -c "cp -r /deployment/* /output/"
+
+          echo "=== VERIFYING EXTRACTED PACKAGES ==="
+          find deployment -name "*pydantic_core*" -type d | head -5
+          find deployment -name "_pydantic_core*" | head -5
+          ls -la deployment/pydantic_core/ || echo "pydantic_core directory not found"
+
+          # Copy source code
+          cp -r src/* deployment/
+          cp lambda_function.py deployment/
+
+          # Create deployment zip
+          cd deployment && zip -r ../deployment.zip . -x "*.pyc" "*/__pycache__/*" "*.pytest_cache*"
+
+          echo "=== DEPLOYMENT ZIP INFO ==="
+          ls -lh ../deployment.zip
+          unzip -l ../deployment.zip | grep -E "(pydantic|fastapi|mangum)" | head -10
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

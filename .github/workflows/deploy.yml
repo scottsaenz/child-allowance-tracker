@@ -119,8 +119,17 @@ jobs:
           # Create deployment directory
           mkdir -p deployment
 
-          # Extract the built packages from Docker
-          docker run --rm -v $(pwd)/deployment:/output lambda-builder sh -c "cp -r /deployment/* /output/"
+          # Extract the built packages from Docker using docker cp
+          echo "=== EXTRACTING PACKAGES FROM DOCKER ==="
+
+          # Create a container without running it
+          CONTAINER_ID=$(docker create lambda-builder)
+
+          # Copy files from container to host
+          docker cp $CONTAINER_ID:/deployment/. deployment/
+
+          # Clean up container
+          docker rm $CONTAINER_ID
 
           echo "=== VERIFYING EXTRACTED PACKAGES ==="
           ls -la deployment/ | grep pydantic || echo "No pydantic directories found"

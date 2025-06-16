@@ -7,9 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  deploy:
+  test:
+    name: Run Tests and Linting
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,30 +25,32 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: |
-          uv sync --dev
+        run: uv sync --dev
 
-      - name: Verify ruff installation
-        run: |
-          echo "=== CHECKING UV ENVIRONMENT ==="
-          uv run python --version
-          uv run pip list | grep ruff || echo "Ruff not found in pip list"
-
-          # Try to run ruff directly
-          uv run ruff --version || echo "Ruff command failed"
-
-          # If ruff is missing, install it explicitly
-          if ! uv run ruff --version; then
-            echo "Installing ruff explicitly..."
-            uv add --dev ruff
-          fi
+      - name: Run tests
+        run: uv run pytest tests/ -v
 
       - name: Run linting
         run: |
           uv run ruff check --fix .
           uv run ruff format .
 
-      # REPLACE THIS STEP with the Docker version
+  build:
+    name: Build Lambda Package
+    runs-on: ubuntu-latest
+    needs: test  # Only run if tests pass
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
       - name: Create Lambda-compatible deployment package using Docker
         run: |
           echo "=== CREATING LAMBDA-COMPATIBLE DEPLOYMENT PACKAGE ==="
@@ -123,6 +125,22 @@ jobs:
           ls -lh ../deployment.zip
           unzip -l ../deployment.zip | grep -E "(pydantic|fastapi|mangum)" | head -10
 
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-deployment
+          path: deployment.zip
+          retention-days: 1
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: test  # Can run in parallel with build
+    if: github.ref == 'refs/heads/main'  # Only deploy on main branch
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v3
         with:
@@ -130,151 +148,51 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Create environment variables JSON
-        env:
-          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-          AUTHORIZED_EMAILS: ${{ secrets.AUTHORIZED_EMAILS }}
+      - name: Deploy infrastructure with CDK
         run: |
-          # Create environment variables JSON file
-          jq -n \
-            --arg sheets_id "$GOOGLE_SHEETS_ID" \
-            --arg service_account "$GOOGLE_SERVICE_ACCOUNT_JSON" \
-            --arg emails "$AUTHORIZED_EMAILS" \
-            '{
-              Variables: {
-                GOOGLE_SHEETS_ID: $sheets_id,
-                GOOGLE_SERVICE_ACCOUNT_JSON: $service_account,
-                AUTHORIZED_EMAILS: $emails,
-                DYNAMODB_TABLE: "allowance-data-production",
-                LOG_LEVEL: "DEBUG",
-                POWERTOOLS_SERVICE_NAME: "child-allowance-tracker",
-                POWERTOOLS_METRICS_NAMESPACE: "ChildAllowanceApp",
-                POWERTOOLS_LOG_LEVEL: "DEBUG"
-              }
-            }' > env-vars.json
+          # ... your CDK deployment steps ...
 
-      - name: Create CloudWatch log group
+  deploy-lambda:
+    name: Deploy Lambda Function
+    runs-on: ubuntu-latest
+    needs: [build, deploy-infrastructure]  # Wait for both to complete
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-deployment
+
+      - name: Update Lambda function
         run: |
-          echo "Creating CloudWatch log group..."
-          aws logs create-log-group \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --region us-east-1 || echo "Log group already exists"
-
-          # Set retention policy
-          aws logs put-retention-policy \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --retention-in-days 14 || echo "Failed to set retention policy"
-
-      - name: Deploy to Lambda
-        run: |
-          echo "Using existing Lambda execution role: arn:aws:iam::960311492155:role/lambda-execution-role"
-
-          # Check if function exists
-          if ! aws lambda get-function --function-name child-allowance-tracker 2>/dev/null; then
-            echo "Creating Lambda function..."
-            aws lambda create-function \
-              --function-name child-allowance-tracker \
-              --runtime python3.13 \
-              --role arn:aws:iam::960311492155:role/lambda-execution-role \
-              --handler lambda_function.lambda_handler \
-              --zip-file fileb://deployment.zip \
-              --timeout 30 \
-              --memory-size 512 \
-              --environment file://env-vars.json
-
-            echo "✅ Lambda function created"
-
-          else
-            echo "Function exists. Updating..."
-
-            # Get current function's CodeSha256
-            CURRENT_SHA=$(aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.CodeSha256' --output text)
-            echo "Current function CodeSha256: $CURRENT_SHA"
-
-            # Calculate SHA256 of our deployment package
-            NEW_SHA=$(openssl dgst -sha256 -binary deployment.zip | base64)
-            echo "New deployment CodeSha256: $NEW_SHA"
-
-            if [ "$CURRENT_SHA" != "$NEW_SHA" ]; then
-              echo "Code has changed. Updating Lambda function..."
-
-              aws lambda update-function-code \
-                --function-name child-allowance-tracker \
-                --zip-file fileb://deployment.zip
-
-              echo "Waiting for function update to complete..."
-              aws lambda wait function-updated --function-name child-allowance-tracker
-              echo "Function code update completed"
-            else
-              echo "✅ Code unchanged. Skipping function code update."
-            fi
-
-            # Update environment variables (always do this in case secrets changed)
-            echo "Updating environment variables..."
-            aws lambda update-function-configuration \
-              --function-name child-allowance-tracker \
-              --environment file://env-vars.json
-
-            echo "Waiting for configuration update to complete..."
-            aws lambda wait function-updated --function-name child-allowance-tracker
-            echo "Configuration update completed"
-          fi
-
-      - name: Create API Gateway
-        run: |
-          echo "Creating/updating API Gateway..."
-
-          # Check if API exists
-          API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='child-allowance-tracker-api'].ApiId" --output text 2>/dev/null || echo "")
-
-          if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
-            echo "Creating new API Gateway..."
-            API_ID=$(aws apigatewayv2 create-api \
-              --name child-allowance-tracker-api \
-              --protocol-type HTTP \
-              --target arn:aws:lambda:us-east-1:960311492155:function:child-allowance-tracker \
-              --route-key 'ANY /{proxy+}' \
-              --query 'ApiId' --output text)
-            echo "Created API with ID: $API_ID"
-          else
-            echo "API Gateway already exists with ID: $API_ID"
-          fi
-
-          # Store API ID for later steps
-          echo "API_ID=$API_ID" >> $GITHUB_ENV
-
-          # Give API Gateway permission to invoke Lambda
-          aws lambda add-permission \
+          aws lambda update-function-code \
             --function-name child-allowance-tracker \
-            --statement-id AllowAPIGatewayInvoke \
-            --action lambda:InvokeFunction \
-            --principal apigateway.amazonaws.com \
-            --source-arn "arn:aws:execute-api:us-east-1:960311492155:$API_ID/*/*" || echo "Permission already exists"
+            --zip-file fileb://deployment.zip
 
-          # Get the API endpoint
-          API_ENDPOINT=$(aws apigatewayv2 get-api --api-id $API_ID --query 'ApiEndpoint' --output text)
-          echo "API_ENDPOINT=$API_ENDPOINT" >> $GITHUB_ENV
-          echo "✅ API Gateway endpoint: $API_ENDPOINT"
+  test-deployment:
+    name: Test Deployed Application
+    runs-on: ubuntu-latest
+    needs: deploy-lambda
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-      - name: Debug Lambda function after deployment
-        run: |
-          echo "=== LAMBDA FUNCTION STATUS ==="
-          aws lambda get-function --function-name child-allowance-tracker --query 'Configuration.[State,StateReason,LastUpdateStatus,LastUpdateStatusReason,Runtime]' --output table
+      - name: Wait for deployment to be ready
+        run: sleep 30
 
-          echo ""
-          echo "=== LAMBDA RESOURCE POLICY ==="
-          aws lambda get-policy --function-name child-allowance-tracker --query 'Policy' --output text | jq '.' || echo "No policy found"
-
-          echo ""
-          echo "=== CHECKING RECENT LAMBDA LOGS ==="
-          aws logs filter-log-events \
-            --log-group-name "/aws/lambda/child-allowance-tracker" \
-            --start-time $(date -d '10 minutes ago' +%s)000 \
-            --query 'events[*].[timestamp,message]' \
-            --output text | sort | tail -20 || echo "No recent logs found"
-
-      - name: Test individual API Gateway endpoints with debugging
+      - name: Test API endpoints
         run: |
           echo "=== API GATEWAY DEBUGGING ==="
           echo "API Endpoint: $API_ENDPOINT"
@@ -318,7 +236,7 @@ jobs:
             --max-time 30 \
             2>&1 | head -30 || echo "Docs endpoint curl failed"
 
-      - name: Check CloudWatch logs after API calls
+      - name: Check CloudWatch logs
         run: |
           echo "=== WAITING FOR LOGS TO PROPAGATE ==="
           sleep 30

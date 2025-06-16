@@ -3,7 +3,6 @@
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,37 +34,37 @@ app.add_middleware(
 
 # Pydantic models
 class Child(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     age: int
     weekly_allowance: float
     current_balance: float = 0.0
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 class Transaction(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     child_id: str
     amount: float
     description: str
     transaction_type: str  # "allowance", "chore", "spending", "adjustment"
-    date: Optional[datetime] = None
+    date: datetime | None = None
 
 
 class Chore(BaseModel):
-    id: Optional[str] = None
+    id: str | None = None
     name: str
     description: str
     value: float
-    assigned_to: Optional[str] = None  # child_id
+    assigned_to: str | None = None  # child_id
     completed: bool = False
-    completed_date: Optional[datetime] = None
+    completed_date: datetime | None = None
 
 
 # In-memory storage (replace with database in production)
-children_db: List[Child] = []
-transactions_db: List[Transaction] = []
-chores_db: List[Chore] = []
+children_db: list[Child] = []
+transactions_db: list[Transaction] = []
+chores_db: list[Chore] = []
 
 
 # Health check endpoint
@@ -121,7 +120,7 @@ async def debug_info():
 
 
 # Children endpoints
-@app.get("/children", response_model=List[Child])
+@app.get("/children", response_model=list[Child])
 async def get_children():
     """Get all children"""
     return children_db
@@ -177,8 +176,8 @@ async def delete_child(child_id: str):
 
 
 # Transaction endpoints
-@app.get("/transactions", response_model=List[Transaction])
-async def get_transactions(child_id: Optional[str] = None):
+@app.get("/transactions", response_model=list[Transaction])
+async def get_transactions(child_id: str | None = None):
     """Get all transactions, optionally filtered by child_id"""
     if child_id:
         return [t for t in transactions_db if t.child_id == child_id]
@@ -216,10 +215,8 @@ async def create_transaction(transaction: Transaction):
 
 
 # Chore endpoints
-@app.get("/chores", response_model=List[Chore])
-async def get_chores(
-    assigned_to: Optional[str] = None, completed: Optional[bool] = None
-):
+@app.get("/chores", response_model=list[Chore])
+async def get_chores(assigned_to: str | None = None, completed: bool | None = None):
     """Get all chores, optionally filtered by assignment and completion status"""
     filtered_chores = chores_db
 

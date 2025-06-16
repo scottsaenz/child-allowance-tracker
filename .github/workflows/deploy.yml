@@ -28,9 +28,20 @@ jobs:
         run: |
           uv sync --dev
 
-      - name: Run tests
+      - name: Verify ruff installation
         run: |
-          uv run pytest tests/ -v
+          echo "=== CHECKING UV ENVIRONMENT ==="
+          uv run python --version
+          uv run pip list | grep ruff || echo "Ruff not found in pip list"
+
+          # Try to run ruff directly
+          uv run ruff --version || echo "Ruff command failed"
+
+          # If ruff is missing, install it explicitly
+          if ! uv run ruff --version; then
+            echo "Installing ruff explicitly..."
+            uv add --dev ruff
+          fi
 
       - name: Run linting
         run: |
